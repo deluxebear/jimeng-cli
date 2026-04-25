@@ -99,7 +99,10 @@ Notes:
 }
 
 function parseArgs(argv) {
-  const [command, subcommand, ...rest] = argv;
+  const [command, maybeSubcommand, ...tail] = argv;
+  const hasSubcommand = Boolean(maybeSubcommand && !maybeSubcommand.startsWith("--"));
+  const subcommand = hasSubcommand ? maybeSubcommand : undefined;
+  const rest = hasSubcommand ? tail : argv.slice(1);
   const opts = { _: [] };
   for (let i = 0; i < rest.length; i += 1) {
     const arg = rest[i];
