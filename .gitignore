@@ -1,0 +1,6 @@
+node_modules/
+.DS_Store
+auth.json
+captures/
+outputs/
+*.log

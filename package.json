@@ -1,0 +1,16 @@
+{
+  "name": "jimeng-cli-research",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "jimeng": "./bin/jimeng.mjs"
+  },
+  "scripts": {
+    "check": "node --check bin/jimeng.mjs",
+    "help": "node bin/jimeng.mjs --help"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
