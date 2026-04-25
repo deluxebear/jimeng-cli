@@ -26,7 +26,8 @@ This report records real calls made against the logged-in Jimeng web session. Se
 | `agent-chat` | `POST /mweb/v1/creation_agent/v2/conversation` | Pass, returns SSE stream as raw text |
 | `generate-audio` | `POST /mweb/v1/aigc_draft/generate` with `audio_base_component` | Pass, `history_id=34564885937676` |
 | `check-media` / `wait-media` / `download-media` | `POST /mweb/v1/get_history_by_ids` + signed media download | Pass for audio, wrote `outputs/interface-audio-0.mp3` |
-| `generate-video` direct replay | `POST /mweb/v1/aigc_draft/generate` with `video_base_component` | Fails with `ret=4013`, while browser UI submission succeeds |
+| `generate-video` direct replay | `POST /mweb/v1/aigc_draft/generate` with `video_base_component` | Fails with `ret=4013` without browser signing |
+| `generate-video --browser-sign` | Browser-generated `msToken` / `a_bogus`, then Node replay | Reaches business validation; latest test returned `ret=1310` / `exceed_model_parallel_max` |
 | `scripts/capture-browser-flow.mjs --mode regen` | Browser traffic capture through CDP/Playwright | Pass, wrote redacted `captures/interface-regen-redacted.json` |
 
 ## Real Generation Tests
@@ -38,6 +39,7 @@ This report records real calls made against the logged-in Jimeng web session. Se
 | Previous verified text-to-image | `jimeng-5.0` / `high_aes_general_v50` | `1:1` | `2k` | `34567179802892` | 4 PNGs, actual output `2048x2048` |
 | Previous verified reference URI | `jimeng-4.6` / `high_aes_general_v42` | `1:1` | `2k` | `34557056230668` | 4 PNGs, actual output `2048x2048` |
 | Browser video submit | `Seedance 2.0 Fast` / `dreamina_seedance_40` | `16:9` | `5s` | `34554355869452` | Submitted, queued with `status=20` |
+| Browser-signed CLI video submit | `Seedance 2.0 Fast` / `dreamina_seedance_40` | `16:9` | `5s` | n/a | Request accepted past anti-abuse signing, then blocked by concurrency limit `ret=1310` |
 | CLI audio submit | `直爽女大` / `7597003459665072686` | n/a | mp3 | `34564885937676` | 2 MP3 results, finished with `status=50` |
 
 Note: for the `16:9` `1k` request, the submitted payload predicted `1024x576`, while the completed item metadata reported `1280x720`. The `image_ratio` and aspect ratio were honored, but the final pixel dimensions were normalized by the service.

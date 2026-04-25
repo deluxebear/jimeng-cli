@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { createHash, createHmac, randomUUID } from "node:crypto";
+import { createRequire } from "node:module";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
@@ -104,7 +105,7 @@ Usage:
   node bin/jimeng.mjs credits --profile default
   node bin/jimeng.mjs agent-chat --profile default --prompt <text>
   node bin/jimeng.mjs generate-image --profile default --prompt <text> [--model jimeng-4.5] [--ratio 1:1] [--resolution 2k] [--reference-image <path>] [--reference-uri <tos-uri>]
-  node bin/jimeng.mjs generate-video --profile default --prompt <text> [--model seedance-2.0-fast] [--ratio 16:9] [--duration 5]
+  node bin/jimeng.mjs generate-video --profile default --prompt <text> [--model seedance-2.0-fast] [--ratio 16:9] [--duration 5] [--browser-sign --port 9222]
   node bin/jimeng.mjs generate-audio --profile default --text <text> [--voice zhishuang-nvda]
   node bin/jimeng.mjs upload-image --profile default --image <path>
   node bin/jimeng.mjs check-image --profile default --history-id <id>
@@ -117,6 +118,7 @@ Usage:
 
 Notes:
   generate-image may consume Jimeng credits.
+  generate-video --browser-sign uses the logged-in Chrome page to create current msToken/a_bogus query params.
   Auth is stored under ~/.jimeng-cli/profiles/<profile>/auth.json.
   login opens an external Chrome profile under ~/.jimeng-cli/browser-profiles/<profile>.
 `;
@@ -406,6 +408,111 @@ async function requestJson(auth, method, uri, { data = {}, params = {}, headers 
       ...headers
     },
     body: method.toUpperCase() === "GET" ? undefined : JSON.stringify(data)
+  });
+  const text = await response.text();
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    parsed = { raw: text };
+  }
+  if (!response.ok) {
+    return { ok: false, status: response.status, endpoint: uri, parsed: redact ? redactObject(parsed) : parsed };
+  }
+  if (parsed && typeof parsed === "object" && "ret" in parsed && parsed.ret !== "0") {
+    return { ok: false, status: response.status, endpoint: uri, parsed: redact ? redactObject(parsed) : parsed };
+  }
+  const body = parsed.data ?? parsed;
+  return { ok: true, status: response.status, endpoint: uri, parsed: redact ? redactObject(body) : body };
+}
+
+function requirePlaywright() {
+  const candidates = [
+    import.meta.url,
+    join(homedir(), ".cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/")
+  ];
+  for (const candidate of candidates) {
+    try {
+      return createRequire(candidate)("playwright");
+    } catch {}
+  }
+  throw new Error("Playwright is required for --browser-sign. Install playwright locally or run inside Codex desktop.");
+}
+
+function normalizeSignedHeaders(headers, auth, referer) {
+  const normalized = { ...headers };
+  for (const key of Object.keys(normalized)) {
+    if (/^(host|content-length|cookie)$/i.test(key)) delete normalized[key];
+  }
+  normalized.cookie = generateCookie(auth.sessionid);
+  normalized.origin = BASE_URL_CN;
+  normalized.referer = referer;
+  return normalized;
+}
+
+async function browserSignRequest({ port = 9222, url, body, referer }) {
+  const { chromium } = requirePlaywright();
+  const browser = await chromium.connectOverCDP(`http://127.0.0.1:${port}`);
+  let page;
+  let captured;
+  try {
+    const context = browser.contexts()[0];
+    if (!context) throw new Error(`No Chrome context found on CDP port ${port}`);
+    page = context.pages().find((candidate) => candidate.url().includes("jimeng.jianying.com")) || context.pages()[0];
+    if (!page || !page.url().includes("jimeng.jianying.com")) {
+      page = await context.newPage();
+      await page.goto(referer, { waitUntil: "domcontentloaded" });
+    }
+
+    let resolveCapture;
+    const capture = new Promise((resolve) => {
+      resolveCapture = resolve;
+    });
+    const timer = setTimeout(() => resolveCapture(null), 10000);
+    await page.route("**/mweb/v1/aigc_draft/generate**", async (route) => {
+      const request = route.request();
+      captured = {
+        url: request.url(),
+        method: request.method(),
+        headers: request.headers(),
+        postData: request.postData()
+      };
+      clearTimeout(timer);
+      resolveCapture(captured);
+      await route.fulfill({
+        status: 418,
+        contentType: "application/json",
+        body: JSON.stringify({ ret: "9999", errmsg: "blocked locally after signing" })
+      });
+    });
+
+    await page.evaluate(async ({ targetUrl, payload }) => {
+      await fetch(targetUrl, {
+        method: "POST",
+        credentials: "include",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(payload)
+      }).catch(() => {});
+    }, { targetUrl: url.toString(), payload: body });
+
+    captured = await capture;
+    if (!captured) throw new Error("Timed out waiting for browser-signed Jimeng request");
+    const signedUrl = new URL(captured.url);
+    if (!signedUrl.searchParams.get("msToken") || !signedUrl.searchParams.get("a_bogus")) {
+      throw new Error("Browser did not add msToken/a_bogus to the request");
+    }
+    return captured;
+  } finally {
+    if (page) await page.unroute("**/mweb/v1/aigc_draft/generate**").catch(() => {});
+    await browser.close().catch(() => {});
+  }
+}
+
+async function requestSignedJson(auth, uri, signedRequest, { referer, redact = true } = {}) {
+  const response = await fetch(signedRequest.url, {
+    method: signedRequest.method || "POST",
+    headers: normalizeSignedHeaders(signedRequest.headers || {}, auth, referer),
+    body: signedRequest.postData
   });
   const text = await response.text();
   let parsed;
@@ -785,14 +892,37 @@ async function generateVideo(auth, opts) {
     ratio: opts.ratio || "16:9",
     duration: opts.duration || 5
   });
+  const params = { commerce_with_input_video: 1, da_version: DRAFT_VERSION, os: "mac" };
+  const referer = "https://jimeng.jianying.com/ai-tool/generate?type=video&workspace=0";
+  if (opts["browser-sign"]) {
+    const signedRequest = await browserSignRequest({
+      port: opts.port || 9222,
+      url: makeUrl("/mweb/v1/aigc_draft/generate", params),
+      body: built.body,
+      referer
+    });
+    const signedUrl = new URL(signedRequest.url);
+    const result = await requestSignedJson(auth, "/mweb/v1/aigc_draft/generate", signedRequest, { referer });
+    return {
+      ...result,
+      request: {
+        ...built.request,
+        credit_consuming: true,
+        browser_sign: true,
+        msToken_len: (signedUrl.searchParams.get("msToken") || "").length,
+        a_bogus_len: (signedUrl.searchParams.get("a_bogus") || "").length
+      },
+      history_id: result.parsed?.aigc_data?.history_record_id
+    };
+  }
   const result = await requestJson(auth, "POST", "/mweb/v1/aigc_draft/generate", {
     data: built.body,
-    params: { commerce_with_input_video: 1, da_version: DRAFT_VERSION, os: "mac" },
-    headers: { referer: "https://jimeng.jianying.com/ai-tool/generate?type=video&workspace=0" }
+    params,
+    headers: { referer }
   });
   return {
     ...result,
-    request: { ...built.request, credit_consuming: true },
+    request: { ...built.request, credit_consuming: true, browser_sign: false },
     history_id: result.parsed?.aigc_data?.history_record_id
   };
 }

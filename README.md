@@ -169,8 +169,12 @@ node bin/jimeng.mjs generate-video \
   --prompt "蓝色玻璃立方体在白色背景中缓慢旋转" \
   --model seedance-2.0-fast \
   --ratio 16:9 \
-  --duration 5
+  --duration 5 \
+  --browser-sign \
+  --port 9222
 ```
+
+`--browser-sign` requires the external Chrome session from `login` to be running and logged in. It uses the live Jimeng page to generate current `msToken` / `a_bogus` query parameters, intercepts that signed request locally, then replays it from Node.
 
 Download a returned image URL:
 
@@ -194,7 +198,8 @@ Verified locally:
 - `download-image` was added to download generated images by `history_id` and item index without exposing signed URLs.
 - `download-image --history-id 34567179802892 --index 0` saved `outputs/jimeng-cli-download-0.png`; `file` confirmed it is a 2048x2048 PNG.
 - Browser-operated `视频生成` succeeded in submitting a `Seedance 2.0 Fast` job with `history_id=34554355869452`, but the queue was very long.
-- Direct CLI `generate-video` currently returns Jimeng `ret=4013` risk-control rejection, so video still needs browser-assisted submission or anti-abuse query reproduction.
+- Direct CLI `generate-video` without browser signing returns Jimeng `ret=4013` risk-control rejection.
+- `generate-video --browser-sign --port 9222` now reaches Jimeng business validation with current browser-generated `msToken` and 192-character `a_bogus`; the latest real test returned `ret=1310` / `exceed_model_parallel_max` because the account already had too many queued video tasks.
 - Browser-operated `配音生成` with voice `直爽女大` succeeded.
 - CLI `generate-audio --text "接口回归测试。"` succeeded with `history_id=34564885937676`.
 - `wait-media --history-id 34564885937676` confirmed two MP3 results.
@@ -214,6 +219,7 @@ Known gaps:
 
 - Local `--reference-image` upload creates ImageX objects, but Jimeng audit returns `ret=3020 download file failed`.
 - Direct video replay returns `ret=4013`; browser UI submission is the current working path.
+- Browser-signed video replay is implemented; current blocker is the account/server concurrency limit (`ret=1310`) when too many video jobs are already queued.
 - Digital-human and action-copy generation require media/template selection. Their config endpoints are captured but generation commands are not implemented yet.
 - Normal status output intentionally redacts signed URLs; use `download-image` or `download-media` for file export.
 
@@ -228,3 +234,5 @@ Known gaps:
 See `PARAMS.md` for the browser-captured parameter matrix covering image models, ratios, resolutions, reference-image requests, and the current local-upload limitation.
 
 See `INTERFACE_TESTS.md` for the full creation-type interface report covering Agent, image, video, digital human, audio, and action-copy captures.
+
+See `SIGNATURE.md` for the `msToken` / `a_bogus` validation and open-source signer comparison.
