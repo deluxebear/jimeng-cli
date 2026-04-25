@@ -14,6 +14,24 @@ const BASE_URL_CN = "https://jimeng.jianying.com";
 const DEFAULT_ASSISTANT_ID_CN = 513695;
 const DEFAULT_MODEL = "jimeng-4.5";
 
+const VIDEO_MODEL_MAP = {
+  "seedance-2.0-fast": {
+    req_key: "dreamina_seedance_40",
+    name: "Seedance 2.0 Fast",
+    benefit_type: "dreamina_seedance_20_fast",
+    resolution: "720p"
+  }
+};
+
+const VOICE_MAP = {
+  "zhishuang-nvda": {
+    id: "7597003459665072686",
+    name: "直爽女大",
+    item_platform: 1,
+    sample_rate: 24000
+  }
+};
+
 const IMAGE_MODEL_MAP = {
   "jimeng-5.0": "high_aes_general_v50",
   "jimeng-4.6": "high_aes_general_v42",
@@ -84,11 +102,17 @@ Usage:
   node bin/jimeng.mjs params
   node bin/jimeng.mjs session --profile default
   node bin/jimeng.mjs credits --profile default
+  node bin/jimeng.mjs agent-chat --profile default --prompt <text>
   node bin/jimeng.mjs generate-image --profile default --prompt <text> [--model jimeng-4.5] [--ratio 1:1] [--resolution 2k] [--reference-image <path>] [--reference-uri <tos-uri>]
+  node bin/jimeng.mjs generate-video --profile default --prompt <text> [--model seedance-2.0-fast] [--ratio 16:9] [--duration 5]
+  node bin/jimeng.mjs generate-audio --profile default --text <text> [--voice zhishuang-nvda]
   node bin/jimeng.mjs upload-image --profile default --image <path>
   node bin/jimeng.mjs check-image --profile default --history-id <id>
   node bin/jimeng.mjs wait-image --profile default --history-id <id> [--interval-ms 10000] [--timeout-ms 1800000]
   node bin/jimeng.mjs download-image --profile default --history-id <id> --index 0 --output <path>
+  node bin/jimeng.mjs check-media --profile default --history-id <id>
+  node bin/jimeng.mjs wait-media --profile default --history-id <id> [--interval-ms 10000] [--timeout-ms 1800000]
+  node bin/jimeng.mjs download-media --profile default --history-id <id> --index 0 --output <path>
   node bin/jimeng.mjs download --url <url> --output <path>
 
 Notes:
@@ -141,7 +165,11 @@ function listParams() {
       negative_prompt: "string",
       intelligent_ratio: "boolean, supported by jimeng-4.0/4.1/4.5/4.6/5.0",
       reference_image: "comma-separated local image paths; switches request to img2img/blend mode",
-      reference_uri: "comma-separated Jimeng/ImageX tos URIs captured from the browser; preferred when reusing existing web assets"
+      reference_uri: "comma-separated Jimeng/ImageX tos URIs captured from the browser; preferred when reusing existing web assets",
+      video_model: Object.keys(VIDEO_MODEL_MAP),
+      video_ratio: ["16:9"],
+      video_duration: "seconds, default 5",
+      voice: Object.entries(VOICE_MAP).map(([alias, voice]) => ({ alias, id: voice.id, name: voice.name }))
     }
   };
 }
@@ -637,6 +665,281 @@ async function generateImage(auth, opts) {
   };
 }
 
+function buildVideoRequest({ prompt, model = "seedance-2.0-fast", ratio = "16:9", duration = 5 }) {
+  if (!prompt || prompt === true) throw new Error("--prompt is required");
+  const config = VIDEO_MODEL_MAP[model];
+  if (!config) throw new Error(`Unsupported video model "${model}". Supported: ${Object.keys(VIDEO_MODEL_MAP).join(", ")}`);
+  if (ratio !== "16:9") throw new Error('Only --ratio 16:9 is verified for video generation right now');
+  const seconds = Number(duration);
+  if (!Number.isFinite(seconds) || seconds <= 0) throw new Error("--duration must be a positive number of seconds");
+  const submitId = uuid();
+  const componentId = uuid();
+  const sceneOption = {
+    type: "video",
+    scene: "BasicVideoGenerateButton",
+    resolution: config.resolution,
+    modelReqKey: config.req_key,
+    videoDuration: seconds,
+    reportParams: {
+      enterSource: "generate",
+      vipSource: "generate",
+      extraVipFunctionKey: `${config.req_key}-${config.resolution}`,
+      useVipFunctionDetailsReporterHoc: true
+    },
+    materialTypes: []
+  };
+  const metricsExtra = {
+    isDefaultSeed: 1,
+    originSubmitId: submitId,
+    isRegenerate: false,
+    enterFrom: "click",
+    position: "page_bottom_box",
+    functionMode: "omni_reference",
+    sceneOptions: JSON.stringify([sceneOption])
+  };
+  const draftContent = JSON.stringify({
+    type: "draft",
+    id: uuid(),
+    min_version: "3.0.5",
+    min_features: [],
+    is_from_tsn: true,
+    version: DRAFT_VERSION,
+    main_component_id: componentId,
+    component_list: [
+      {
+        type: "video_base_component",
+        id: componentId,
+        min_version: "1.0.0",
+        aigc_mode: "workbench",
+        gen_type: 10,
+        metadata: {
+          type: "",
+          id: uuid(),
+          created_platform: 3,
+          created_platform_version: "",
+          created_time_in_ms: Date.now().toString(),
+          created_did: ""
+        },
+        generate_type: "gen_video",
+        abilities: {
+          type: "",
+          id: uuid(),
+          gen_video: {
+            type: "",
+            id: uuid(),
+            text_to_video_params: {
+              type: "",
+              id: uuid(),
+              video_gen_inputs: [
+                {
+                  type: "",
+                  id: uuid(),
+                  min_version: "3.0.5",
+                  prompt,
+                  video_mode: 2,
+                  fps: 24,
+                  duration_ms: Math.round(seconds * 1000),
+                  idip_meta_list: []
+                }
+              ],
+              video_aspect_ratio: ratio,
+              seed: Math.floor(Math.random() * 1000000000) + 3000000000,
+              model_req_key: config.req_key,
+              priority: 0
+            },
+            video_task_extra: JSON.stringify(metricsExtra)
+          }
+        },
+        process_type: 1
+      }
+    ]
+  });
+  const commerce = {
+    benefit_type: config.benefit_type,
+    resource_id: "generate_video",
+    resource_id_type: "str",
+    resource_sub_type: "aigc"
+  };
+  return {
+    submitId,
+    body: {
+      extend: {
+        root_model: config.req_key,
+        m_video_commerce_info: commerce,
+        workspace_id: 0,
+        m_video_commerce_info_list: [commerce]
+      },
+      submit_id: submitId,
+      metrics_extra: JSON.stringify(metricsExtra),
+      draft_content: draftContent,
+      http_common_info: { aid: DEFAULT_ASSISTANT_ID_CN }
+    },
+    request: { mode: "text2video", model, req_key: config.req_key, ratio, duration: seconds, submit_id: submitId }
+  };
+}
+
+async function generateVideo(auth, opts) {
+  const built = buildVideoRequest({
+    prompt: opts.prompt,
+    model: opts.model || "seedance-2.0-fast",
+    ratio: opts.ratio || "16:9",
+    duration: opts.duration || 5
+  });
+  const result = await requestJson(auth, "POST", "/mweb/v1/aigc_draft/generate", {
+    data: built.body,
+    params: { commerce_with_input_video: 1, da_version: DRAFT_VERSION, os: "mac" },
+    headers: { referer: "https://jimeng.jianying.com/ai-tool/generate?type=video&workspace=0" }
+  });
+  return {
+    ...result,
+    request: { ...built.request, credit_consuming: true },
+    history_id: result.parsed?.aigc_data?.history_record_id
+  };
+}
+
+function buildAudioRequest({ text, voice = "zhishuang-nvda" }) {
+  if (!text || text === true) throw new Error("--text is required");
+  const voiceConfig = VOICE_MAP[voice];
+  if (!voiceConfig) throw new Error(`Unsupported voice "${voice}". Supported: ${Object.keys(VOICE_MAP).join(", ")}`);
+  const submitId = uuid();
+  const componentId = uuid();
+  const metricsExtra = {
+    isAiLyric: false,
+    lyricCnt: 0,
+    isRandomInspiration: false,
+    promptSource: "custom",
+    enterFrom: "click",
+    position: "page_bottom_box",
+    sceneOptions: JSON.stringify([{ type: "audio", scene: "AudioTTSGenerate", audioDuration: 1 }]),
+    isRegenerate: false
+  };
+  const audioConfig = {
+    type: "",
+    id: uuid(),
+    format: "mp3",
+    sample_rate: voiceConfig.sample_rate,
+    speech_rate: 0,
+    pitch_rate: 0
+  };
+  const draftContent = JSON.stringify({
+    type: "draft",
+    id: uuid(),
+    min_version: "3.2.3",
+    min_features: [],
+    is_from_tsn: true,
+    version: DRAFT_VERSION,
+    main_component_id: componentId,
+    component_list: [
+      {
+        type: "audio_base_component",
+        id: componentId,
+        min_version: "3.2.3",
+        aigc_mode: "workbench",
+        gen_type: 44,
+        metadata: {
+          type: "",
+          id: uuid(),
+          created_platform: 3,
+          created_platform_version: "",
+          created_time_in_ms: new Date().toISOString(),
+          created_did: ""
+        },
+        generate_type: "generate_tts",
+        abilities: {
+          type: "",
+          id: uuid(),
+          text_to_speech: {
+            type: "",
+            id: uuid(),
+            text,
+            id_info: { id: voiceConfig.id, item_platform: voiceConfig.item_platform },
+            audio_config: audioConfig,
+            voice_name: voiceConfig.name
+          }
+        }
+      }
+    ]
+  });
+  return {
+    submitId,
+    body: {
+      extend: {
+        m_video_commerce_info_list: [
+          {
+            amount: 1,
+            benefit_type: "audio_tts_generate",
+            resource_id: "generate_audio",
+            resource_id_type: "str",
+            resource_sub_type: "aigc"
+          }
+        ],
+        workspace_id: 0
+      },
+      submit_id: submitId,
+      metrics_extra: JSON.stringify(metricsExtra),
+      draft_content: draftContent,
+      http_common_info: { aid: DEFAULT_ASSISTANT_ID_CN }
+    },
+    request: { mode: "text2audio", voice, voice_id: voiceConfig.id, voice_name: voiceConfig.name, submit_id: submitId }
+  };
+}
+
+async function generateAudio(auth, opts) {
+  const built = buildAudioRequest({ text: opts.text, voice: opts.voice || "zhishuang-nvda" });
+  const result = await requestJson(auth, "POST", "/mweb/v1/aigc_draft/generate", {
+    data: built.body,
+    headers: { referer: "https://jimeng.jianying.com/ai-tool/generate?type=audio&workspace=0" }
+  });
+  return {
+    ...result,
+    request: { ...built.request, credit_consuming: true },
+    history_id: result.parsed?.aigc_data?.history_record_id
+  };
+}
+
+async function agentChat(auth, opts) {
+  if (!opts.prompt || opts.prompt === true) throw new Error("--prompt is required");
+  const conversationId = opts["conversation-id"] || uuid();
+  const messageId = uuid();
+  const metricsExtra = {
+    userMessageId: messageId,
+    prompt: opts.prompt,
+    isAddImage: 0,
+    conversationId,
+    enterFrom: "click",
+    referenceCnt: 0,
+    position: "page_bottom_box"
+  };
+  const result = await requestJson(auth, "POST", "/mweb/v1/creation_agent/v2/conversation", {
+    data: {
+      conversation_id: conversationId,
+      messages: [
+        {
+          author: { role: "user" },
+          metadata: {
+            is_visually_hidden_from_conversation: false,
+            conversation_id: conversationId,
+            parent_message_id: opts["parent-message-id"] || "",
+            metrics_extra: JSON.stringify(metricsExtra),
+            system_hints: ["dreamina_creative_consultant"]
+          },
+          id: messageId,
+          content: {
+            content_type: "",
+            content_parts: [{ text: opts.prompt, is_referenced: false }]
+          },
+          create_time: Date.now(),
+          tools: []
+        }
+      ],
+      version: "3.0.0",
+      workspace_id: 0
+    },
+    headers: { referer: "https://jimeng.jianying.com/ai-tool/generate?type=agentic&workspace=0" }
+  });
+  return { ...result, request: { conversation_id: conversationId, message_id: messageId } };
+}
+
 function parseList(value) {
   if (!value || value === true) return [];
   return String(value).split(",").map((item) => item.trim()).filter(Boolean);
@@ -956,6 +1259,34 @@ async function checkImage(auth, historyId) {
   };
 }
 
+async function checkMedia(auth, historyId) {
+  if (!historyId || historyId === true) throw new Error("--history-id is required");
+  const result = await requestJson(auth, "POST", "/mweb/v1/get_history_by_ids", {
+    data: { history_ids: [historyId], image_info: IMAGE_INFO },
+    redact: false
+  });
+  const record = result.parsed?.[historyId];
+  const media = primaryMedia(record);
+  return {
+    ok: result.ok,
+    status: result.status,
+    endpoint: result.endpoint,
+    history_id: historyId,
+    parsed: summarizeHistoryRecord(record),
+    media_count: media.length,
+    media: media.map((item) => ({
+      type: item.type,
+      item_id: item.item_id,
+      width: item.width,
+      height: item.height,
+      format: item.format,
+      duration: item.duration,
+      size: item.size,
+      url_sample: redactUrl(item.url)
+    }))
+  };
+}
+
 async function downloadImage(auth, opts) {
   const historyId = opts["history-id"];
   if (!historyId || historyId === true) throw new Error("--history-id is required");
@@ -994,6 +1325,44 @@ async function downloadImage(auth, opts) {
   };
 }
 
+async function downloadMedia(auth, opts) {
+  const historyId = opts["history-id"];
+  if (!historyId || historyId === true) throw new Error("--history-id is required");
+  const index = Number(opts.index || 0);
+  if (!Number.isInteger(index) || index < 0) throw new Error("--index must be a non-negative integer");
+  const output = opts.output;
+  if (!output || output === true) throw new Error("--output is required");
+  const result = await requestJson(auth, "POST", "/mweb/v1/get_history_by_ids", {
+    data: { history_ids: [historyId], image_info: IMAGE_INFO },
+    redact: false
+  });
+  const record = result.parsed?.[historyId];
+  const media = primaryMedia(record);
+  const item = media[index];
+  if (!item) throw new Error(`No media at index ${index}; available count: ${media.length}`);
+  const response = await fetch(item.url);
+  if (!response.ok) throw new Error(`Download failed: ${response.status} ${response.statusText}`);
+  const bytes = Buffer.from(await response.arrayBuffer());
+  await mkdir(dirname(output), { recursive: true });
+  await writeFile(output, bytes, { flag: "wx" });
+  return {
+    ok: true,
+    history_id: historyId,
+    index,
+    output,
+    bytes: bytes.length,
+    media: {
+      type: item.type,
+      item_id: item.item_id,
+      width: item.width,
+      height: item.height,
+      format: item.format,
+      duration: item.duration,
+      declared_size: item.size
+    }
+  };
+}
+
 function primaryImages(record) {
   if (!record?.item_list) return [];
   const images = [];
@@ -1010,6 +1379,53 @@ function primaryImages(record) {
     });
   }
   return images;
+}
+
+function primaryMedia(record) {
+  if (!record?.item_list) return [];
+  const media = [];
+  for (const item of record.item_list) {
+    const common = item.common_attr || {};
+    const large = item.image?.large_images?.[0];
+    if (large?.image_url) {
+      media.push({
+        type: "image",
+        item_id: common.id,
+        url: large.image_url,
+        width: large.width,
+        height: large.height,
+        format: large.format,
+        size: large.size
+      });
+      continue;
+    }
+    const audioUrl = item.audio?.origin_audio?.url || common.file?.file_url || common.item_urls?.find((url) => /^https?:\/\//.test(url));
+    if (audioUrl) {
+      media.push({
+        type: "audio",
+        item_id: common.id,
+        url: audioUrl,
+        duration: item.audio?.origin_audio?.duration || item.audio?.duration,
+        format: item.audio?.origin_audio?.format || "audio",
+        size: item.audio?.origin_audio?.size
+      });
+      continue;
+    }
+    const videoUrl = item.video?.play_addr?.url_list?.[0] || item.video?.origin_video?.url || common.item_urls?.find((url) => /^https?:\/\//.test(url));
+    if (videoUrl) {
+      media.push({
+        type: "video",
+        item_id: common.id,
+        url: videoUrl,
+        width: item.video?.width,
+        height: item.video?.height,
+        duration: item.video?.duration,
+        format: item.video?.format || "video",
+        size: item.video?.size
+      });
+    }
+  }
+  return media;
 }
 
 function summarizeHistoryRecord(record) {
@@ -1032,7 +1448,10 @@ function summarizeHistoryRecord(record) {
       width: item.image?.large_images?.[0]?.width,
       height: item.image?.large_images?.[0]?.height,
       format: item.image?.large_images?.[0]?.format,
-      size: item.image?.large_images?.[0]?.size
+      size: item.image?.large_images?.[0]?.size,
+      effect_type: item.common_attr?.effect_type,
+      has_audio: Boolean(item.audio),
+      has_video: Boolean(item.video)
     }))
   };
 }
@@ -1069,6 +1488,21 @@ async function waitImage(auth, opts) {
     const record = latest.parsed?.[historyId];
     if (latest.parsed?.status === 30 || latest.parsed?.fail_code) return latest;
     if (latest.parsed?.status === 50) return latest;
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+  return { ok: false, status: "timeout", endpoint: "/mweb/v1/get_history_by_ids", history_id: historyId, latest };
+}
+
+async function waitMedia(auth, opts) {
+  const historyId = opts["history-id"];
+  const intervalMs = Number(opts["interval-ms"] || 10000);
+  const timeoutMs = Number(opts["timeout-ms"] || 1800000);
+  const deadline = Date.now() + timeoutMs;
+  let latest;
+  while (Date.now() <= deadline) {
+    latest = await checkMedia(auth, historyId);
+    if (latest.media_count > 0 && latest.parsed?.status === 50) return latest;
+    if (latest.parsed?.status === 30 || latest.parsed?.fail_code) return latest;
     await new Promise((resolve) => setTimeout(resolve, intervalMs));
   }
   return { ok: false, status: "timeout", endpoint: "/mweb/v1/get_history_by_ids", history_id: historyId, latest };
@@ -1138,9 +1572,18 @@ async function main() {
       headers: { referer: "https://jimeng.jianying.com/ai-tool/image/generate" },
       noDefaultParams: true
     });
+  } else if (command === "agent-chat") {
+    const auth = await loadAuth(profile);
+    result = await agentChat(auth, opts);
   } else if (command === "generate-image") {
     const auth = await loadAuth(profile);
     result = await generateImage(auth, opts);
+  } else if (command === "generate-video") {
+    const auth = await loadAuth(profile);
+    result = await generateVideo(auth, opts);
+  } else if (command === "generate-audio") {
+    const auth = await loadAuth(profile);
+    result = await generateAudio(auth, opts);
   } else if (command === "upload-image") {
     const auth = await loadAuth(profile);
     if (!opts.image || opts.image === true) throw new Error("--image is required");
@@ -1164,6 +1607,15 @@ async function main() {
   } else if (command === "download-image") {
     const auth = await loadAuth(profile);
     result = await downloadImage(auth, opts);
+  } else if (command === "check-media") {
+    const auth = await loadAuth(profile);
+    result = await checkMedia(auth, opts["history-id"]);
+  } else if (command === "wait-media") {
+    const auth = await loadAuth(profile);
+    result = await waitMedia(auth, opts);
+  } else if (command === "download-media") {
+    const auth = await loadAuth(profile);
+    result = await downloadMedia(auth, opts);
   } else if (command === "download") {
     result = await download(opts.url, opts.output);
   } else {

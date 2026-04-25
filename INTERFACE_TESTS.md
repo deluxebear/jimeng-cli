@@ -23,6 +23,10 @@ This report records real calls made against the logged-in Jimeng web session. Se
 | `download --url` | Generic URL download | Pass after parser fix, wrote `outputs/interface-raw-download.png` |
 | `upload-image` | Jimeng upload proof/token + ImageX upload + content audit | Fails at Jimeng audit with `ret=3020`, `errmsg=download file failed` |
 | `generate-image --reference-uri` | `get_image_by_uri` + `submit_audit_job` + `algo_proxy` + `aigc_draft/generate` | Pass, `history_id=34558314205708` |
+| `agent-chat` | `POST /mweb/v1/creation_agent/v2/conversation` | Pass, returns SSE stream as raw text |
+| `generate-audio` | `POST /mweb/v1/aigc_draft/generate` with `audio_base_component` | Pass, `history_id=34564885937676` |
+| `check-media` / `wait-media` / `download-media` | `POST /mweb/v1/get_history_by_ids` + signed media download | Pass for audio, wrote `outputs/interface-audio-0.mp3` |
+| `generate-video` direct replay | `POST /mweb/v1/aigc_draft/generate` with `video_base_component` | Fails with `ret=4013`, while browser UI submission succeeds |
 | `scripts/capture-browser-flow.mjs --mode regen` | Browser traffic capture through CDP/Playwright | Pass, wrote redacted `captures/interface-regen-redacted.json` |
 
 ## Real Generation Tests
@@ -33,6 +37,8 @@ This report records real calls made against the logged-in Jimeng web session. Se
 | Reference URI + prompt | `jimeng-4.6` / `high_aes_general_v42` | `1:1` | `1k` | `34558314205708` | 4 PNGs, actual output `1024x1024` |
 | Previous verified text-to-image | `jimeng-5.0` / `high_aes_general_v50` | `1:1` | `2k` | `34567179802892` | 4 PNGs, actual output `2048x2048` |
 | Previous verified reference URI | `jimeng-4.6` / `high_aes_general_v42` | `1:1` | `2k` | `34557056230668` | 4 PNGs, actual output `2048x2048` |
+| Browser video submit | `Seedance 2.0 Fast` / `dreamina_seedance_40` | `16:9` | `5s` | `34554355869452` | Submitted, queued with `status=20` |
+| CLI audio submit | `直爽女大` / `7597003459665072686` | n/a | mp3 | `34564885937676` | 2 MP3 results, finished with `status=50` |
 
 Note: for the `16:9` `1k` request, the submitted payload predicted `1024x576`, while the completed item metadata reported `1280x720`. The `image_ratio` and aspect ratio were honored, but the final pixel dimensions were normalized by the service.
 
@@ -224,6 +230,215 @@ Browser body during regeneration:
 
 Both forms worked in testing.
 
+### Agent Mode
+
+```http
+POST /mweb/v1/creation_agent/v2/conversation
+```
+
+Important body fields:
+
+```json
+{
+  "conversation_id": "<uuid>",
+  "messages": [
+    {
+      "author": { "role": "user" },
+      "metadata": {
+        "conversation_id": "<uuid>",
+        "parent_message_id": "",
+        "metrics_extra": "{\"userMessageId\":\"<uuid>\",\"prompt\":\"<prompt>\",\"referenceCnt\":0,\"position\":\"page_bottom_box\"}",
+        "system_hints": ["dreamina_creative_consultant"]
+      },
+      "id": "<uuid>",
+      "content": {
+        "content_type": "",
+        "content_parts": [
+          {
+            "text": "<prompt>",
+            "is_referenced": false
+          }
+        ]
+      },
+      "create_time": 1777139859196,
+      "tools": []
+    }
+  ],
+  "version": "3.0.0",
+  "workspace_id": 0
+}
+```
+
+The response is server-sent events (`event: message`, `event: delta`, `event: system`) returned over the same HTTP request. The current CLI preserves it as `parsed.raw`.
+
+### Text-To-Video Generate
+
+Browser UI submitted successfully through:
+
+```http
+POST /mweb/v1/aigc_draft/generate
+```
+
+Important body fields:
+
+```json
+{
+  "extend": {
+    "root_model": "dreamina_seedance_40",
+    "m_video_commerce_info": {
+      "benefit_type": "dreamina_seedance_20_fast",
+      "resource_id": "generate_video",
+      "resource_id_type": "str",
+      "resource_sub_type": "aigc"
+    },
+    "workspace_id": 0,
+    "m_video_commerce_info_list": [
+      {
+        "benefit_type": "dreamina_seedance_20_fast",
+        "resource_id": "generate_video",
+        "resource_id_type": "str",
+        "resource_sub_type": "aigc"
+      }
+    ]
+  },
+  "submit_id": "<uuid>",
+  "metrics_extra": "{\"functionMode\":\"omni_reference\",\"sceneOptions\":\"[{\\\"type\\\":\\\"video\\\",\\\"scene\\\":\\\"BasicVideoGenerateButton\\\",\\\"resolution\\\":\\\"720p\\\",\\\"modelReqKey\\\":\\\"dreamina_seedance_40\\\",\\\"videoDuration\\\":5}]\"}",
+  "draft_content": {
+    "type": "draft",
+    "min_version": "3.0.5",
+    "version": "3.3.14",
+    "component_list": [
+      {
+        "type": "video_base_component",
+        "gen_type": 10,
+        "generate_type": "gen_video",
+        "abilities": {
+          "gen_video": {
+            "text_to_video_params": {
+              "video_gen_inputs": [
+                {
+                  "prompt": "<prompt>",
+                  "video_mode": 2,
+                  "fps": 24,
+                  "duration_ms": 5000,
+                  "idip_meta_list": []
+                }
+              ],
+              "video_aspect_ratio": "16:9",
+              "seed": 3344935544,
+              "model_req_key": "dreamina_seedance_40",
+              "priority": 0
+            },
+            "video_task_extra": "<same metrics_extra json>"
+          }
+        },
+        "process_type": 1
+      }
+    ]
+  },
+  "http_common_info": {
+    "aid": 513695
+  }
+}
+```
+
+Direct Node replay with the same body shape and browser-matched query parameters currently returns:
+
+```json
+{
+  "ret": "4013",
+  "errmsg": "生成失败，疑似存在异常行为，请重新尝试",
+  "fail_starling_key": "web_risk_control_message_reject_generation"
+}
+```
+
+This means video generation needs either browser-assisted submission or the browser-generated anti-abuse query parameters (`msToken`, `a_bogus`) reproduced before it can be considered a pure API replay.
+
+### Text-To-Audio Generate
+
+The UI first loads voices:
+
+```http
+POST /mweb/v1/feed
+```
+
+Body:
+
+```json
+{
+  "panel": "dreamina_tone",
+  "count": 50,
+  "offset": 0,
+  "category_key": "all",
+  "panel_source": "loki",
+  "app_id": 1775,
+  "pack_item_opt": {
+    "need_favorite_info": true
+  }
+}
+```
+
+Generation uses:
+
+```http
+POST /mweb/v1/aigc_draft/generate
+```
+
+Important body fields:
+
+```json
+{
+  "extend": {
+    "m_video_commerce_info_list": [
+      {
+        "amount": 1,
+        "benefit_type": "audio_tts_generate",
+        "resource_id": "generate_audio",
+        "resource_id_type": "str",
+        "resource_sub_type": "aigc"
+      }
+    ],
+    "workspace_id": 0
+  },
+  "submit_id": "<uuid>",
+  "metrics_extra": "{\"type\":\"audio\",\"scene\":\"AudioTTSGenerate\",\"audioDuration\":1}",
+  "draft_content": {
+    "type": "draft",
+    "min_version": "3.2.3",
+    "version": "3.3.14",
+    "component_list": [
+      {
+        "type": "audio_base_component",
+        "gen_type": 44,
+        "generate_type": "generate_tts",
+        "abilities": {
+          "text_to_speech": {
+            "text": "<text>",
+            "id_info": {
+              "id": "7597003459665072686",
+              "item_platform": 1
+            },
+            "audio_config": {
+              "format": "mp3",
+              "sample_rate": 24000,
+              "speech_rate": 0,
+              "pitch_rate": 0
+            },
+            "voice_name": "直爽女大"
+          }
+        }
+      }
+    ]
+  }
+}
+```
+
+Completed audio results expose media URLs at:
+
+- `item_list[].audio.origin_audio.url`
+- `item_list[].common_attr.file.file_url`
+- `item_list[].common_attr.item_urls[]`
+
 ### Local Upload Path
 
 The CLI currently attempts:
@@ -273,8 +488,21 @@ Observed endpoints:
 | 1 | `POST` | `/mweb/v1/workspace/list` |
 | multiple | `GET` | signed `p*-dreamina-sign.byteimg.com/tos-cn-i-tb4s082cfz/...` image assets |
 
+Additional creation-type endpoints captured by switching the menu:
+
+| Creation type | URL type | Important endpoints |
+| --- | --- | --- |
+| Agent 模式 | `type=agentic` | `/mweb/v1/creation_agent/v2/get_agent_config`, `/mweb/v1/creation_agent/v2/conversation` |
+| 图片生成 | `type=image` | `/mweb/v1/get_common_config`, `/mweb/v1/aigc_draft/generate` |
+| 视频生成 | `type=video` | `/mweb/v1/video_generate/get_common_config`, `/mweb/v1/aigc_draft/generate`, `/mweb/v1/get_history_queue_info` |
+| 数字人 | `type=digitalHuman` | `/mweb/v1/video_generate/get_common_config` with `lip_sync_image_generate_video` and `lip_sync_video_generate_video`, `/mweb/v1/feed` for voice assets |
+| 配音生成 | `type=audio` | `/mweb/v1/feed` with `panel=dreamina_tone`, `/mweb/v1/tts_generate` for voice preview, `/mweb/v1/aigc_draft/generate` |
+| 动作模仿 | `type=actionCopy` | `/mweb/v1/video_generate/get_common_config`, `/mweb/v1/dreamina_subject/get`, upload/material endpoints |
+
 ## Known Gaps
 
 - Local `--reference-image` upload is not yet production-ready because Jimeng audit returns `3020 download file failed`.
-- Browser generation uses `draft_content.version=3.3.14` for reference/regenerate flows. The CLI should be updated to mirror that version everywhere if stricter validation appears later.
+- Direct video replay is not production-ready because it returns `4013`; browser UI submission works with the same visible body shape, so anti-abuse query generation is still missing.
+- Digital-human and action-copy generation need media/template selection before a real generation payload can be submitted. Their config and material-loading endpoints are captured, but not yet converted into generation commands.
+- Browser generation uses `draft_content.version=3.3.14` for several flows. The server sometimes returns older versions in stored history, but submit payloads should prefer `3.3.14`.
 - The CLI does not yet expose workspace list, unread count, or credit history commands, although their browser endpoints are captured.

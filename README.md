@@ -1,6 +1,6 @@
 # Jimeng Website To CLI Research
 
-This workspace contains a small dependency-free Node.js CLI for replaying the Jimeng image-generation web workflow.
+This workspace contains a small dependency-free Node.js CLI for replaying parts of the Jimeng web workflow.
 
 Target page:
 
@@ -10,7 +10,7 @@ https://jimeng.jianying.com/ai-tool/generate?type=image&workspace=0
 
 ## Findings
 
-The browser workflow is:
+The image browser workflow is:
 
 1. Open the image generator page.
 2. Enter an image prompt.
@@ -27,6 +27,9 @@ Public reverse-engineered implementations and the live page agree on these key e
 | Credit check | `POST` | `/commerce/v1/benefits/user_credit` | Read-only |
 | Start image generation | `POST` | `/mweb/v1/aigc_draft/generate` | Consumes credits |
 | Poll image result | `POST` | `/mweb/v1/get_history_by_ids` | Read-only |
+| Agent conversation | `POST` | `/mweb/v1/creation_agent/v2/conversation` | May create conversation state |
+| Start audio generation | `POST` | `/mweb/v1/aigc_draft/generate` | Consumes credits |
+| Start video generation | `POST` | `/mweb/v1/aigc_draft/generate` | Browser works; direct CLI currently blocked by risk control |
 
 Authentication is cookie/session based. This CLI stores only the Jimeng `sessionid` value in:
 
@@ -124,6 +127,51 @@ node bin/jimeng.mjs download-image \
   --output outputs/image-0.png
 ```
 
+Send a prompt to Agent mode:
+
+```bash
+node bin/jimeng.mjs agent-chat \
+  --profile default \
+  --prompt "给我一个一句话图片创意"
+```
+
+Start text-to-audio generation with the verified preset voice `直爽女大`:
+
+```bash
+node bin/jimeng.mjs generate-audio \
+  --profile default \
+  --text "欢迎来到即梦接口测试。" \
+  --voice zhishuang-nvda
+```
+
+Check or wait for image/video/audio history records:
+
+```bash
+node bin/jimeng.mjs check-media --profile default --history-id "<history_id>"
+node bin/jimeng.mjs wait-media --profile default --history-id "<history_id>"
+```
+
+Download a generated media result without printing its signed URL:
+
+```bash
+node bin/jimeng.mjs download-media \
+  --profile default \
+  --history-id "<history_id>" \
+  --index 0 \
+  --output outputs/media-0.mp3
+```
+
+Video generation payload is implemented from browser capture, but direct replay is currently blocked by Jimeng risk control:
+
+```bash
+node bin/jimeng.mjs generate-video \
+  --profile default \
+  --prompt "蓝色玻璃立方体在白色背景中缓慢旋转" \
+  --model seedance-2.0-fast \
+  --ratio 16:9 \
+  --duration 5
+```
+
 Download a returned image URL:
 
 ```bash
@@ -145,6 +193,13 @@ Verified locally:
 - `check-image` confirmed `status=50`, `fail_msg=Success`, and 4 generated PNG items at 2048x2048.
 - `download-image` was added to download generated images by `history_id` and item index without exposing signed URLs.
 - `download-image --history-id 34567179802892 --index 0` saved `outputs/jimeng-cli-download-0.png`; `file` confirmed it is a 2048x2048 PNG.
+- Browser-operated `视频生成` succeeded in submitting a `Seedance 2.0 Fast` job with `history_id=34554355869452`, but the queue was very long.
+- Direct CLI `generate-video` currently returns Jimeng `ret=4013` risk-control rejection, so video still needs browser-assisted submission or anti-abuse query reproduction.
+- Browser-operated `配音生成` with voice `直爽女大` succeeded.
+- CLI `generate-audio --text "接口回归测试。"` succeeded with `history_id=34564885937676`.
+- `wait-media --history-id 34564885937676` confirmed two MP3 results.
+- `download-media --history-id 34558310019596 --index 0` saved `outputs/interface-audio-0.mp3`.
+- CLI `agent-chat` reached `/mweb/v1/creation_agent/v2/conversation` and returned the site SSE stream.
 
 Verified in the logged-in in-app browser after explicit approval for a real test:
 
@@ -155,10 +210,12 @@ Verified in the logged-in in-app browser after explicit approval for a real test
 - Result: page reached `1/1 生成完成` and displayed two generated robot-at-desk images.
 - Screenshot evidence: `outputs/jimeng-real-test-browser.png`
 
-Not yet verified through the local CLI:
+Known gaps:
 
-- Direct binary download through raw `download --url` was not verified in this pass.
-- Normal status output intentionally redacts signed image URLs; use `download-image` for file export.
+- Local `--reference-image` upload creates ImageX objects, but Jimeng audit returns `ret=3020 download file failed`.
+- Direct video replay returns `ret=4013`; browser UI submission is the current working path.
+- Digital-human and action-copy generation require media/template selection. Their config endpoints are captured but generation commands are not implemented yet.
+- Normal status output intentionally redacts signed URLs; use `download-image` or `download-media` for file export.
 
 ## Sources
 
@@ -168,4 +225,6 @@ Not yet verified through the local CLI:
 
 ## Parameter Research
 
-See `PARAMS.md` for the browser-captured parameter matrix covering models, ratios, resolutions, reference-image requests, and the current local-upload limitation.
+See `PARAMS.md` for the browser-captured parameter matrix covering image models, ratios, resolutions, reference-image requests, and the current local-upload limitation.
+
+See `INTERFACE_TESTS.md` for the full creation-type interface report covering Agent, image, video, digital human, audio, and action-copy captures.
