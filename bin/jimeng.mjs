@@ -63,6 +63,12 @@ const VIDEO_MODEL_MAP = {
     name: "Seedance 2.0 Fast",
     benefit_type: "dreamina_seedance_20_fast",
     resolution: "720p"
+  },
+  "seedance-2.0-vip": {
+    req_key: "dreamina_seedance_40_pro_vision",
+    name: "Seedance 2.0 VIP",
+    benefit_type: "seedance_20_pro_720p_output",
+    resolution: "720p"
   }
 };
 
