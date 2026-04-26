@@ -91,9 +91,11 @@ Experimental pure JS signer workbench:
 ```bash
 jimeng signer compare --profile default
 jimeng signer fixture --profile default --name default
+jimeng signer trace --profile default --ids 110 --code-limit 420 --ref-limit 200
 ```
 
 `--algorithm-sign` is intentionally experimental. It currently verifies the pure JS canonicalization and `msToken` derivation, then falls back to the VM-backed `--node-sign` because the `a_bogus`/`fn150` translation is not complete. Golden fixtures are written under `~/.jimeng-cli/fixtures/` and should not be committed.
+`signer trace` instruments the local official VM to identify which bytecode blocks read request fields and append signing query parameters; it is read-only and does not submit a generation request.
 
 ## Structure
 

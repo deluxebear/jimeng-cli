@@ -30,7 +30,7 @@ import {
   waitMedia,
   withDefaultSigner
 } from "../lib/media.mjs";
-import { algorithmSignRequest, browserSignRequest, compareAlgorithmSignRequest, createBdmsFixture, localSignRequest, nodeSignRequest, requestSignedJson } from "../lib/signer.mjs";
+import { algorithmSignRequest, browserSignRequest, compareAlgorithmSignRequest, createBdmsFixture, localSignRequest, nodeSignRequest, requestSignedJson, traceNodeSignRequest } from "../lib/signer.mjs";
 import { VIDEO_MODEL_MAP, generateVideo as generateVideoRequest } from "../lib/video.mjs";
 
 const DEFAULT_MODEL = "jimeng-4.5";
@@ -45,7 +45,7 @@ Usage:
   jimeng config list|get|set [key] [value]
   jimeng completion zsh|bash|fish
   jimeng commands list
-  jimeng signer compare|fixture [--profile default] [--name default]
+  jimeng signer compare|fixture|trace [--profile default] [--name default]
   jimeng doctor [--profile default]
 
   jimeng video create --prompt <text> [--model seedance-2.0-vip] [--ratio 16:9] [--duration 5]
@@ -112,7 +112,7 @@ const COMPLETION_COMMANDS = {
   config: ["list", "get", "set"],
   completion: ["zsh", "bash", "fish"],
   commands: ["list"],
-  signer: ["compare", "fixture"],
+  signer: ["compare", "fixture", "trace"],
   video: ["create", "status", "queue", "wait", "download", "run"],
   image: ["create", "status", "queue", "wait", "download", "run"],
   audio: ["create", "status", "queue", "wait", "download", "run"],
@@ -581,6 +581,58 @@ async function createSignerFixture(auth, opts) {
   };
 }
 
+async function traceSigner(auth, opts) {
+  const traced = await traceNodeSignRequest({
+    auth,
+    url: await signerUrl(opts),
+    body: await signerBody(opts)
+  });
+  const signedUrl = new URL(traced.signedRequest.url);
+  const trace = traced.trace;
+  const ids = effectiveTraceIds(opts);
+  return {
+    ok: true,
+    submitted: false,
+    counts: traced.counts,
+    meta: Object.fromEntries(Object.entries(traced.meta)
+      .filter(([id]) => !ids.length || ids.includes(id))
+      .map(([id, meta]) => [id, {
+        args: meta.args,
+        strict: meta.strict,
+        code_len: meta.code_len,
+        try_blocks: meta.try_blocks,
+        code_sample: meta.code?.slice(0, Number(opts["code-limit"] || 120)),
+        string_refs: collectStringRefs(meta.code || [], traced.strings).slice(0, Number(opts["ref-limit"] || 120))
+      }])),
+    trace_count: trace.length,
+    trace_sample: trace.slice(Math.max(0, trace.length - Number(opts.limit || 40))),
+    msToken_len: (signedUrl.searchParams.get("msToken") || "").length,
+    a_bogus_len: (signedUrl.searchParams.get("a_bogus") || "").length
+  };
+}
+
+function effectiveTraceIds(opts) {
+  if (!opts.ids || opts.ids === true) return [];
+  return String(opts.ids).split(",").map((id) => id.trim()).filter(Boolean);
+}
+
+function collectStringRefs(code, strings) {
+  const refs = [];
+  const oneOperand = new Set([3, 4, 6, 7, 9, 11, 18, 21, 30, 31, 32, 34, 35, 39, 40, 43, 47, 48, 65, 67, 69, 70, 71, 72, 73, 74]);
+  const twoOperands = new Set([8, 46, 51]);
+  const stringOps = new Set([3, 6, 7, 11, 21, 30, 40, 43, 47, 48, 65, 67, 69, 71, 73]);
+  for (let i = 0; i < code.length; i += 1) {
+    const op = code[i];
+    if (stringOps.has(op)) {
+      const index = code[i + 1];
+      refs.push({ offset: i, op, index, value: strings[index] });
+    }
+    if (twoOperands.has(op)) i += 2;
+    else if (oneOperand.has(op)) i += 1;
+  }
+  return refs;
+}
+
 async function doctor(profile, config) {
   const checks = [];
   checks.push({ name: "config", ok: true, output_dir: config.output_dir, retry_count: config.retry_count, retry_delay_ms: config.retry_delay_ms });
@@ -743,6 +795,9 @@ async function main() {
   } else if (command === "signer" && subcommand === "fixture") {
     const auth = await loadAuth(profile);
     result = await createSignerFixture(auth, effectiveOpts);
+  } else if (command === "signer" && subcommand === "trace") {
+    const auth = await loadAuth(profile);
+    result = await traceSigner(auth, effectiveOpts);
   } else if (command === "params") {
     result = listParams();
   } else if (command === "models" && subcommand === "list") {
