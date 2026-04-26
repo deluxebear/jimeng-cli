@@ -170,10 +170,12 @@ node bin/jimeng.mjs generate-video \
   --model seedance-2.0-fast \
   --ratio 16:9 \
   --duration 5 \
-  --local-sign
+  --node-sign
 ```
 
-`--local-sign` runs Jimeng's current `bdms-1.0.1.20.js` in a headless local Chromium page and appends current `msToken` / `a_bogus` query parameters before replaying from Node. Run `capture-auth` from a logged-in Chrome session first; it saves the `xmst` value required for `msToken`.
+`--node-sign` runs Jimeng's current `bdms-1.0.1.20.js` in a pure Node `vm` browser shim and appends current `msToken` / `a_bogus` query parameters before replaying from Node. Run `capture-auth` from a logged-in Chrome session first; it saves the `xmst` value required for `msToken`.
+
+`--local-sign` remains available as a fallback. It runs the same official `bdms` script in a headless local Chromium page instead of the Node VM shim.
 
 `--browser-sign --port 9222` remains available as a fallback. It uses the live Jimeng page to generate current `msToken` / `a_bogus` query parameters, intercepts that signed request locally, then replays it from Node.
 
@@ -202,6 +204,7 @@ Verified locally:
 - Direct CLI `generate-video` without browser signing returns Jimeng `ret=4013` risk-control rejection.
 - `generate-video --browser-sign --port 9222` now reaches Jimeng business validation with current browser-generated `msToken` and 192-character `a_bogus`; the latest real test returned `ret=1310` / `exceed_model_parallel_max` because the account already had too many queued video tasks.
 - `generate-video --local-sign` now reaches the same Jimeng business validation using locally executed `bdms-1.0.1.20.js`; the latest real test returned `ret=1310` with `msToken_len=184` and `a_bogus_len=192`.
+- `generate-video --node-sign` now submits successfully using pure Node VM signing; the latest real test returned `history_id=34581829134860`, `msToken_len=184`, and `a_bogus_len=176`.
 - Browser-operated `配音生成` with voice `直爽女大` succeeded.
 - CLI `generate-audio --text "接口回归测试。"` succeeded with `history_id=34564885937676`.
 - `wait-media --history-id 34564885937676` confirmed two MP3 results.

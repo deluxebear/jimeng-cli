@@ -40,10 +40,12 @@ The CLI can also sign locally without an already-open Jimeng page:
 node bin/jimeng.mjs generate-video \
   --profile default \
   --prompt "蓝色玻璃立方体在白色背景中缓慢旋转" \
-  --local-sign
+  --node-sign
 ```
 
-Implementation detail: `capture-auth` saves `xmst` from Jimeng localStorage. `--local-sign` loads the official `bdms-1.0.1.20.js` in a headless local Chromium page on the Jimeng origin, initializes it with the live `_SdkGlueInit` config observed from the page (`aid=513695`, `pageId=28324`, protected path list including `/mweb/v1/aigc_draft/generate`), intercepts the signed request, then replays it from Node with the saved `sessionid`.
+Implementation detail: `capture-auth` saves `xmst` from Jimeng localStorage. `--node-sign` loads the official `bdms-1.0.1.20.js` in a pure Node `vm` context with a minimal browser shim (`window`, `document`, `navigator`, `XMLHttpRequest`, `fetch`, `localStorage`, canvas stubs, microtask APIs, and DOM collection constructors). It initializes `bdms` with the live `_SdkGlueInit` config observed from the page (`aid=513695`, `pageId=28324`, protected path list including `/mweb/v1/aigc_draft/generate`), captures the signed request from the hooked VM `fetch`, then replays it from Node with the saved `sessionid`.
+
+`--local-sign` remains available as a fallback implementation that runs the same official `bdms` script in headless Chromium instead of the Node VM shim.
 
 ## Open-Source Comparison
 
@@ -83,3 +85,14 @@ a_bogus_len=192
 ```
 
 This validates that the locally executed official `bdms` script reproduces the live Jimeng request signature shape. The remaining `1310` result is an account/task concurrency limit, not an anti-abuse signature failure.
+
+Pure Node VM `bdms` signing has also been validated:
+
+```text
+history_id=34581829134860
+model=Seedance 2.0 VIP
+msToken_len=184
+a_bogus_len=176
+```
+
+This proves the current CLI can produce accepted `msToken` / `a_bogus` without an opened browser page and without launching Chromium.

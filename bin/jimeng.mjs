@@ -5,6 +5,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { spawn } from "node:child_process";
+import vm from "node:vm";
 
 const VERSION_CODE = "8.4.0";
 const PLATFORM_CODE = "7";
@@ -152,9 +153,9 @@ Usage:
   node bin/jimeng.mjs session --profile default
   node bin/jimeng.mjs credits --profile default
   node bin/jimeng.mjs agent-chat --profile default --prompt <text>
-  node bin/jimeng.mjs generate-image --profile default --prompt <text> [--model jimeng-4.5] [--ratio 1:1] [--resolution 2k] [--reference-image <path>] [--reference-uri <tos-uri>] [--local-sign]
-  node bin/jimeng.mjs generate-video --profile default --prompt <text> [--model seedance-2.0-fast] [--ratio 16:9] [--duration 5] [--local-sign | --browser-sign --port 9222]
-  node bin/jimeng.mjs generate-audio --profile default --text <text> [--voice zhishuang-nvda] [--local-sign]
+  node bin/jimeng.mjs generate-image --profile default --prompt <text> [--model jimeng-4.5] [--ratio 1:1] [--resolution 2k] [--reference-image <path>] [--reference-uri <tos-uri>] [--node-sign | --local-sign]
+  node bin/jimeng.mjs generate-video --profile default --prompt <text> [--model seedance-2.0-fast] [--ratio 16:9] [--duration 5] [--node-sign | --local-sign | --browser-sign --port 9222]
+  node bin/jimeng.mjs generate-audio --profile default --text <text> [--voice zhishuang-nvda] [--node-sign | --local-sign]
   node bin/jimeng.mjs upload-image --profile default --image <path>
   node bin/jimeng.mjs check-image --profile default --history-id <id>
   node bin/jimeng.mjs wait-image --profile default --history-id <id> [--interval-ms 10000] [--timeout-ms 1800000]
@@ -166,6 +167,7 @@ Usage:
 
 Notes:
   generate-image may consume Jimeng credits.
+  --node-sign runs the official bdms VM in a pure Node vm browser shim to create msToken/a_bogus.
   --local-sign uses the official bdms script in a headless local Chromium page to create current msToken/a_bogus query params.
   generate-video --browser-sign uses the logged-in Chrome page as a fallback signer.
   Auth is stored under ~/.jimeng-cli/profiles/<profile>/auth.json.
@@ -713,6 +715,346 @@ async function localSignRequest({ auth, url, body }) {
   }
 }
 
+class VmStorage {
+  constructor() {
+    this.values = {};
+  }
+
+  getItem(key) {
+    return this.values[key] ?? null;
+  }
+
+  setItem(key, value) {
+    this.values[key] = String(value);
+  }
+
+  removeItem(key) {
+    delete this.values[key];
+  }
+
+  clear() {
+    this.values = {};
+  }
+}
+
+class VmClassList {
+  add() {}
+  remove() {}
+  contains() {
+    return false;
+  }
+  toggle() {
+    return false;
+  }
+}
+
+class VmElement {
+  constructor(tag) {
+    this.tagName = String(tag).toUpperCase();
+    this.nodeName = this.tagName;
+    this.children = [];
+    this.childNodes = this.children;
+    this.style = {};
+    this.attrs = {};
+    this.parentNode = null;
+    this.classList = new VmClassList();
+    this.dataset = {};
+    this.width = 300;
+    this.height = 150;
+  }
+
+  setAttribute(key, value) {
+    this.attrs[key] = String(value);
+    this[key] = String(value);
+  }
+
+  getAttribute(key) {
+    return this.attrs[key] || null;
+  }
+
+  addEventListener(event, callback) {
+    if (event === "load") setTimeout(callback, 0);
+  }
+
+  removeEventListener() {}
+
+  appendChild(element) {
+    this.children.push(element);
+    element.parentNode = this;
+    return element;
+  }
+
+  removeChild(element) {
+    this.children = this.children.filter((child) => child !== element);
+    return element;
+  }
+
+  insertBefore(element) {
+    return this.appendChild(element);
+  }
+
+  getContext() {
+    return {
+      fillStyle: "",
+      strokeStyle: "",
+      font: "",
+      textBaseline: "",
+      fillRect() {},
+      clearRect() {},
+      getImageData() {
+        return { data: new Uint8ClampedArray(4) };
+      },
+      putImageData() {},
+      drawImage() {},
+      measureText() {
+        return { width: 1 };
+      },
+      fillText() {},
+      strokeText() {},
+      beginPath() {},
+      arc() {},
+      stroke() {},
+      closePath() {},
+      rect() {},
+      isPointInPath() {
+        return false;
+      }
+    };
+  }
+
+  toDataURL() {
+    return "data:image/png;base64,eA==";
+  }
+
+  click() {}
+}
+
+class VmHeaders {
+  constructor(init = {}) {
+    this.map = new Map();
+    for (const [key, value] of Object.entries(init)) this.set(key, value);
+  }
+
+  set(key, value) {
+    this.map.set(String(key).toLowerCase(), String(value));
+  }
+
+  get(key) {
+    return this.map.get(String(key).toLowerCase()) || null;
+  }
+
+  entries() {
+    return this.map.entries();
+  }
+
+  forEach(callback) {
+    for (const [key, value] of this.map) callback(value, key, this);
+  }
+
+  [Symbol.iterator]() {
+    return this.entries();
+  }
+}
+
+function createBdmsVmContext() {
+  const captured = [];
+  const head = new VmElement("head");
+  const body = new VmElement("body");
+  const html = new VmElement("html");
+  head.parentNode = html;
+  body.parentNode = html;
+
+  function VmXMLHttpRequest() {
+    this.headers = {};
+    this.readyState = 0;
+    this.status = 200;
+    this.responseText = "{}";
+    this.response = this.responseText;
+  }
+  VmXMLHttpRequest.prototype.open = function open(method, requestUrl) {
+    this.method = method;
+    this.url = String(requestUrl);
+    captured.push({ kind: "xhr.open", method, url: this.url });
+  };
+  VmXMLHttpRequest.prototype.send = function send(bodyPayload) {
+    this.body = bodyPayload;
+    this.readyState = 4;
+    captured.push({ kind: "xhr.send", url: this.url, body: bodyPayload });
+  };
+  VmXMLHttpRequest.prototype.setRequestHeader = function setRequestHeader(key, value) {
+    this.headers[key] = value;
+  };
+  VmXMLHttpRequest.prototype.addEventListener = function addEventListener(event, callback) {
+    if (event === "load") this.onload = callback;
+    if (event === "readystatechange") this.onreadystatechange = callback;
+  };
+  VmXMLHttpRequest.prototype.removeEventListener = function removeEventListener() {};
+  VmXMLHttpRequest.prototype.overrideMimeType = function overrideMimeType() {};
+
+  function VmRequest(input, options = {}) {
+    this.url = String(input?.url || input);
+    this.method = options.method || input?.method || "GET";
+    this.headers = options.headers instanceof VmHeaders ? options.headers : new VmHeaders(options.headers || {});
+    this.body = options.body;
+  }
+
+  const document = {
+    cookie: "",
+    referrer: "",
+    head,
+    body,
+    documentElement: html,
+    scripts: [],
+    createElement: (tag) => new VmElement(tag),
+    createTextNode: (text) => ({ nodeType: 3, data: "", textContent: text, nodeValue: text }),
+    createComment: (text) => ({ nodeType: 8, textContent: text }),
+    getElementsByTagName: (tag) => {
+      if (tag === "head") return [head];
+      if (tag === "body") return [body];
+      return [];
+    },
+    getElementById: () => null,
+    querySelector: () => null,
+    querySelectorAll: () => [],
+    addEventListener() {},
+    removeEventListener() {},
+    dispatchEvent() {},
+    write() {},
+    createEvent() {
+      return { initEvent() {} };
+    }
+  };
+
+  const window = {};
+  const originalFetch = async (input, options) => {
+    captured.push({ kind: "fetch", url: String(input?.url || input), method: options?.method || input?.method || "GET", headers: options?.headers || {}, postData: options?.body });
+    return {
+      ok: true,
+      status: 200,
+      headers: new VmHeaders({ "content-type": "application/json" }),
+      text: async () => "{}",
+      json: async () => ({})
+    };
+  };
+
+  Object.assign(window, {
+    window,
+    self: window,
+    globalThis: window,
+    top: window,
+    parent: window,
+    document,
+    Document: function Document() {},
+    HTMLDocument: function HTMLDocument() {},
+    Element: VmElement,
+    HTMLElement: VmElement,
+    HTMLCanvasElement: VmElement,
+    DOMTokenList: VmClassList,
+    NodeList: Array,
+    HTMLCollection: Array,
+    CSSRuleList: Array,
+    CSSStyleDeclaration: function CSSStyleDeclaration() {},
+    navigator: {
+      userAgent: SDK_USER_AGENT,
+      language: "zh-CN",
+      languages: ["zh-CN"],
+      platform: "MacIntel",
+      plugins: [1],
+      mimeTypes: [1],
+      hardwareConcurrency: 8,
+      webdriver: false
+    },
+    location: new URL("https://jimeng.jianying.com/ai-tool/generate?type=image&workspace=0"),
+    performance: {
+      now: () => Date.now(),
+      timing: {},
+      getEntriesByType: () => [],
+      measure() {},
+      mark() {}
+    },
+    localStorage: new VmStorage(),
+    sessionStorage: new VmStorage(),
+    Storage: VmStorage,
+    XMLHttpRequest: VmXMLHttpRequest,
+    fetch: originalFetch,
+    Request: VmRequest,
+    Headers: VmHeaders,
+    URL,
+    URLSearchParams,
+    TextEncoder,
+    TextDecoder,
+    atob: (value) => Buffer.from(value, "base64").toString("binary"),
+    btoa: (value) => Buffer.from(value, "binary").toString("base64"),
+    setTimeout,
+    clearTimeout,
+    setInterval,
+    clearInterval,
+    queueMicrotask,
+    requestAnimationFrame: (callback) => setTimeout(() => callback(Date.now()), 16),
+    cancelAnimationFrame: clearTimeout,
+    console: {
+      ...console,
+      error() {}
+    },
+    MutationObserver: function MutationObserver(callback) {
+      this.observe = () => {
+        if (callback) queueMicrotask(callback);
+      };
+      this.disconnect = () => {};
+    },
+    Event: function Event(type) {
+      this.type = type;
+    },
+    addEventListener() {},
+    removeEventListener() {},
+    dispatchEvent() {},
+    screen: {
+      width: 1920,
+      height: 1080,
+      availWidth: 1920,
+      availHeight: 1055,
+      colorDepth: 24,
+      pixelDepth: 24
+    },
+    devicePixelRatio: 2
+  });
+
+  return { context: vm.createContext(window), window, captured, originalFetch };
+}
+
+async function nodeSignRequest({ auth, url, body }) {
+  if (!auth.xmst) {
+    throw new Error("Missing xmst in auth.json. Run capture-auth again from a logged-in Jimeng Chrome session.");
+  }
+  const bdmsSource = await loadBdmsSource();
+  const { context, window, captured, originalFetch } = createBdmsVmContext();
+  window.localStorage.setItem("xmst", auth.xmst);
+  if (auth.web_runtime_security_uid) window.localStorage.setItem("web_runtime_security_uid", auth.web_runtime_security_uid);
+  if (auth.msuuid) window.localStorage.setItem("__msuuid__", auth.msuuid);
+  vm.runInContext(bdmsSource, context, { filename: `bdms-${BDMS_VERSION}.js`, timeout: 5000 });
+  if (!window.bdms || window.fetch === originalFetch) throw new Error("Node VM bdms did not initialize request hooks");
+  window.bdms.init(bdmsInitConfig());
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  await window.fetch(url.toString(), {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body)
+  }).catch(() => {});
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  const signedRequest = captured.find((entry) => entry.kind === "fetch" && entry.url.includes("/mweb/v1/aigc_draft/generate"));
+  if (!signedRequest) throw new Error("Node VM bdms did not capture a signed Jimeng request");
+  const signedUrl = new URL(signedRequest.url);
+  if (!signedUrl.searchParams.get("msToken") || !signedUrl.searchParams.get("a_bogus")) {
+    throw new Error("Node VM bdms did not add msToken/a_bogus to the request");
+  }
+  return {
+    url: signedRequest.url,
+    method: signedRequest.method || "POST",
+    headers: signedRequest.headers || { "content-type": "application/json" },
+    postData: signedRequest.postData
+  };
+}
+
 async function requestSignedJson(auth, uri, signedRequest, { referer, redact = true } = {}) {
   const response = await fetch(signedRequest.url, {
     method: signedRequest.method || "POST",
@@ -952,6 +1294,38 @@ async function generateImage(auth, opts) {
     references: referenceUploads
   });
   const referer = "https://jimeng.jianying.com/ai-tool/generate?type=image";
+  if (opts["node-sign"]) {
+    const signedRequest = await nodeSignRequest({
+      auth,
+      url: makeUrl("/mweb/v1/aigc_draft/generate"),
+      body: built.body
+    });
+    const signedUrl = new URL(signedRequest.url);
+    const result = await requestSignedJson(auth, "/mweb/v1/aigc_draft/generate", signedRequest, { referer });
+    return {
+      ...result,
+      request: {
+        model: opts.model || DEFAULT_MODEL,
+        ratio: opts.ratio || "1:1",
+        resolution: opts.resolution || "2k",
+        mode: built.mode,
+        reference_count: built.reference_count,
+        uploaded_references: referenceUploads.map((upload) => ({
+          uri: redact(upload.uri),
+          width: upload.width,
+          height: upload.height,
+          format: upload.format,
+          bytes: upload.bytes
+        })),
+        submit_id: built.submitId,
+        credit_consuming: true,
+        node_sign: true,
+        msToken_len: (signedUrl.searchParams.get("msToken") || "").length,
+        a_bogus_len: (signedUrl.searchParams.get("a_bogus") || "").length
+      },
+      history_id: result.parsed?.aigc_data?.history_record_id
+    };
+  }
   if (opts["local-sign"]) {
     const signedRequest = await localSignRequest({
       auth,
@@ -977,6 +1351,7 @@ async function generateImage(auth, opts) {
         })),
         submit_id: built.submitId,
         credit_consuming: true,
+        node_sign: false,
         local_sign: true,
         msToken_len: (signedUrl.searchParams.get("msToken") || "").length,
         a_bogus_len: (signedUrl.searchParams.get("a_bogus") || "").length
@@ -1005,6 +1380,7 @@ async function generateImage(auth, opts) {
       })),
       submit_id: built.submitId,
       credit_consuming: true,
+      node_sign: false,
       local_sign: false
     },
     history_id: result.parsed?.aigc_data?.history_record_id
@@ -1133,6 +1509,26 @@ async function generateVideo(auth, opts) {
   });
   const params = { commerce_with_input_video: 1, da_version: DRAFT_VERSION, os: "mac" };
   const referer = "https://jimeng.jianying.com/ai-tool/generate?type=video&workspace=0";
+  if (opts["node-sign"]) {
+    const signedRequest = await nodeSignRequest({
+      auth,
+      url: makeUrl("/mweb/v1/aigc_draft/generate", params),
+      body: built.body
+    });
+    const signedUrl = new URL(signedRequest.url);
+    const result = await requestSignedJson(auth, "/mweb/v1/aigc_draft/generate", signedRequest, { referer });
+    return {
+      ...result,
+      request: {
+        ...built.request,
+        credit_consuming: true,
+        node_sign: true,
+        msToken_len: (signedUrl.searchParams.get("msToken") || "").length,
+        a_bogus_len: (signedUrl.searchParams.get("a_bogus") || "").length
+      },
+      history_id: result.parsed?.aigc_data?.history_record_id
+    };
+  }
   if (opts["local-sign"]) {
     const signedRequest = await localSignRequest({
       auth,
@@ -1146,6 +1542,7 @@ async function generateVideo(auth, opts) {
       request: {
         ...built.request,
         credit_consuming: true,
+        node_sign: false,
         local_sign: true,
         msToken_len: (signedUrl.searchParams.get("msToken") || "").length,
         a_bogus_len: (signedUrl.searchParams.get("a_bogus") || "").length
@@ -1167,6 +1564,7 @@ async function generateVideo(auth, opts) {
       request: {
         ...built.request,
         credit_consuming: true,
+        node_sign: false,
         local_sign: false,
         browser_sign: true,
         msToken_len: (signedUrl.searchParams.get("msToken") || "").length,
@@ -1182,7 +1580,7 @@ async function generateVideo(auth, opts) {
   });
   return {
     ...result,
-    request: { ...built.request, credit_consuming: true, local_sign: false, browser_sign: false },
+    request: { ...built.request, credit_consuming: true, node_sign: false, local_sign: false, browser_sign: false },
     history_id: result.parsed?.aigc_data?.history_record_id
   };
 }
@@ -1277,6 +1675,26 @@ function buildAudioRequest({ text, voice = "zhishuang-nvda" }) {
 async function generateAudio(auth, opts) {
   const built = buildAudioRequest({ text: opts.text, voice: opts.voice || "zhishuang-nvda" });
   const referer = "https://jimeng.jianying.com/ai-tool/generate?type=audio&workspace=0";
+  if (opts["node-sign"]) {
+    const signedRequest = await nodeSignRequest({
+      auth,
+      url: makeUrl("/mweb/v1/aigc_draft/generate"),
+      body: built.body
+    });
+    const signedUrl = new URL(signedRequest.url);
+    const result = await requestSignedJson(auth, "/mweb/v1/aigc_draft/generate", signedRequest, { referer });
+    return {
+      ...result,
+      request: {
+        ...built.request,
+        credit_consuming: true,
+        node_sign: true,
+        msToken_len: (signedUrl.searchParams.get("msToken") || "").length,
+        a_bogus_len: (signedUrl.searchParams.get("a_bogus") || "").length
+      },
+      history_id: result.parsed?.aigc_data?.history_record_id
+    };
+  }
   if (opts["local-sign"]) {
     const signedRequest = await localSignRequest({
       auth,
@@ -1290,6 +1708,7 @@ async function generateAudio(auth, opts) {
       request: {
         ...built.request,
         credit_consuming: true,
+        node_sign: false,
         local_sign: true,
         msToken_len: (signedUrl.searchParams.get("msToken") || "").length,
         a_bogus_len: (signedUrl.searchParams.get("a_bogus") || "").length
@@ -1303,7 +1722,7 @@ async function generateAudio(auth, opts) {
   });
   return {
     ...result,
-    request: { ...built.request, credit_consuming: true, local_sign: false },
+    request: { ...built.request, credit_consuming: true, node_sign: false, local_sign: false },
     history_id: result.parsed?.aigc_data?.history_record_id
   };
 }
