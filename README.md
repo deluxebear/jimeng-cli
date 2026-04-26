@@ -1,6 +1,6 @@
-# Jimeng Website To CLI Research
+# Jimeng CLI
 
-This workspace contains a small dependency-free Node.js CLI for replaying parts of the Jimeng web workflow.
+This workspace contains a Node.js CLI for replaying authenticated Jimeng web workflows. It supports image, video, audio, and status/download flows, with pure Node VM signing for Jimeng's current `bdms` request protection.
 
 Target page:
 
@@ -29,9 +29,9 @@ Public reverse-engineered implementations and the live page agree on these key e
 | Poll image result | `POST` | `/mweb/v1/get_history_by_ids` | Read-only |
 | Agent conversation | `POST` | `/mweb/v1/creation_agent/v2/conversation` | May create conversation state |
 | Start audio generation | `POST` | `/mweb/v1/aigc_draft/generate` | Consumes credits |
-| Start video generation | `POST` | `/mweb/v1/aigc_draft/generate` | Browser works; direct CLI currently blocked by risk control |
+| Start video generation | `POST` | `/mweb/v1/aigc_draft/generate` | Consumes credits |
 
-Authentication is cookie/session based. This CLI stores only the Jimeng `sessionid` value in:
+Authentication is cookie/session based. This CLI stores the Jimeng `sessionid` plus browser security values needed for local signing in:
 
 ```text
 ~/.jimeng-cli/profiles/<profile>/auth.json
@@ -59,13 +59,19 @@ jimeng --help
 Recommended external-browser flow:
 
 ```bash
-node bin/jimeng.mjs login --profile default --port 9222
+jimeng auth login --profile default --port 9222
 ```
 
 Log in to Jimeng in the Chrome window that opens, then capture the first-party session cookie:
 
 ```bash
-node bin/jimeng.mjs capture-auth --profile default --port 9222
+jimeng auth capture --profile default --port 9222
+```
+
+Check the stored auth summary:
+
+```bash
+jimeng auth status --profile default
 ```
 
 Save a `sessionid` from the Jimeng browser cookie:
@@ -76,7 +82,55 @@ node bin/jimeng.mjs auth save --profile default --sessionid "YOUR_SESSIONID"
 
 The CLI redacts saved credentials in output.
 
-## Commands
+## Product Commands
+
+New commands default to pure Node VM signing (`--node-sign`), so generation does not require an open browser after auth capture.
+
+Create a video job:
+
+```bash
+jimeng video create \
+  --profile default \
+  --prompt "一只小猫在窗边睡觉，电影感，柔和光线" \
+  --model seedance-2.0-vip \
+  --duration 5 \
+  --ratio 16:9
+```
+
+Check, wait, and download:
+
+```bash
+jimeng video status --profile default --history-id "<history_id>"
+jimeng video wait --profile default --history-id "<history_id>" --interval-ms 30000
+jimeng video download --profile default --history-id "<history_id>" --index 0 --output outputs/video.mp4
+```
+
+Create, wait, and download in one command:
+
+```bash
+jimeng video run \
+  --profile default \
+  --prompt "一只小猫在窗边睡觉，电影感，柔和光线" \
+  --model seedance-2.0-vip \
+  --duration 5 \
+  --ratio 16:9 \
+  --output outputs/cat.mp4
+```
+
+Image and audio use the same shape:
+
+```bash
+jimeng image create --profile default --prompt "一张电影感的未来城市夜景" --ratio 16:9 --resolution 2k
+jimeng audio create --profile default --text "接口回归测试。"
+```
+
+List recent submitted jobs:
+
+```bash
+jimeng jobs list --limit 20
+```
+
+## Compatibility Commands
 
 Read-only account check:
 

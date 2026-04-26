@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { createHash, createHmac, randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { spawn } from "node:child_process";
@@ -146,6 +146,29 @@ function usage() {
   return `jimeng CLI
 
 Usage:
+  jimeng auth login [--profile default] [--port 9222]
+  jimeng auth capture [--profile default] [--port 9222]
+  jimeng auth status [--profile default]
+
+  jimeng video create --prompt <text> [--model seedance-2.0-vip] [--ratio 16:9] [--duration 5]
+  jimeng video status --history-id <id>
+  jimeng video wait --history-id <id> [--interval-ms 30000] [--timeout-ms 86400000]
+  jimeng video download --history-id <id> --index 0 --output <path>
+  jimeng video run --prompt <text> --output <path> [--model seedance-2.0-vip]
+
+  jimeng image create --prompt <text> [--model jimeng-4.5] [--ratio 1:1] [--resolution 2k] [--reference-image <path>] [--reference-uri <tos-uri>]
+  jimeng image status --history-id <id>
+  jimeng image wait --history-id <id>
+  jimeng image download --history-id <id> --index 0 --output <path>
+
+  jimeng audio create --text <text> [--voice zhishuang-nvda]
+  jimeng audio status --history-id <id>
+  jimeng audio wait --history-id <id>
+  jimeng audio download --history-id <id> --index 0 --output <path>
+
+  jimeng jobs list
+
+Compatibility commands:
   node bin/jimeng.mjs login --profile default [--port 9222]
   node bin/jimeng.mjs capture-auth --profile default [--port 9222]
   node bin/jimeng.mjs auth save --profile default --sessionid <sessionid>
@@ -167,6 +190,7 @@ Usage:
 
 Notes:
   generate-image may consume Jimeng credits.
+  New create/run commands use --node-sign by default.
   --node-sign runs the official bdms VM in a pure Node vm browser shim to create msToken/a_bogus.
   --local-sign uses the official bdms script in a headless local Chromium page to create current msToken/a_bogus query params.
   generate-video --browser-sign uses the logged-in Chrome page as a fallback signer.
@@ -233,6 +257,10 @@ function authPath(profile = "default") {
 
 function browserProfilePath(profile = "default") {
   return join(homedir(), ".jimeng-cli", "browser-profiles", profile);
+}
+
+function jobsPath() {
+  return join(homedir(), ".jimeng-cli", "jobs.jsonl");
 }
 
 async function login(profile, port = 9222) {
@@ -2241,17 +2269,29 @@ function primaryMedia(record) {
       });
       continue;
     }
-    const videoUrl = item.video?.play_addr?.url_list?.[0] || item.video?.origin_video?.url || common.item_urls?.find((url) => /^https?:\/\//.test(url));
+    const transcoded = item.video?.transcoded_video;
+    const transcodedVideo =
+      transcoded?.origin ||
+      transcoded?.["720p"] ||
+      transcoded?.["480p"] ||
+      transcoded?.["360p"] ||
+      Object.values(transcoded || {}).find((candidate) => candidate?.video_url);
+    const videoUrl =
+      transcodedVideo?.video_url ||
+      item.video?.play_addr?.url_list?.[0] ||
+      item.video?.origin_video?.url ||
+      common.item_urls?.find((url) => /^https?:\/\//.test(url));
     if (videoUrl) {
       media.push({
         type: "video",
         item_id: common.id,
         url: videoUrl,
-        width: item.video?.width,
-        height: item.video?.height,
-        duration: item.video?.duration,
-        format: item.video?.format || "video",
-        size: item.video?.size
+        width: transcodedVideo?.width || item.video?.width,
+        height: transcodedVideo?.height || item.video?.height,
+        duration: item.video?.duration_ms || transcodedVideo?.duration || item.video?.duration,
+        format: transcodedVideo?.format || item.video?.format || "video",
+        size: transcodedVideo?.size || item.video?.size,
+        definition: transcodedVideo?.definition
       });
     }
   }
@@ -2372,6 +2412,72 @@ function redactUrl(value) {
   }
 }
 
+function withDefaultSigner(opts) {
+  if (opts["node-sign"] || opts["local-sign"] || opts["browser-sign"] || opts["no-sign"]) return opts;
+  return { ...opts, "node-sign": true };
+}
+
+async function appendJob({ type, result, opts, profile }) {
+  if (!result?.history_id) return;
+  const file = jobsPath();
+  await mkdir(dirname(file), { recursive: true, mode: 0o700 });
+  const job = {
+    ts: new Date().toISOString(),
+    profile,
+    type,
+    history_id: result.history_id,
+    prompt: opts.prompt || opts.text,
+    model: result.request?.model || opts.model,
+    status: result.parsed?.aigc_data?.status || result.parsed?.status,
+    request: result.request ? redactObject(result.request) : undefined
+  };
+  await appendFile(file, `${JSON.stringify(job)}\n`, { mode: 0o600 });
+}
+
+async function listJobs(opts = {}) {
+  const limit = Number(opts.limit || 20);
+  let text = "";
+  try {
+    text = await readFile(jobsPath(), "utf8");
+  } catch {
+    return { ok: true, jobs: [] };
+  }
+  const jobs = text.split("\n").filter(Boolean).map((line) => {
+    try {
+      return JSON.parse(line);
+    } catch {
+      return null;
+    }
+  }).filter(Boolean);
+  return { ok: true, jobs: jobs.slice(-limit).reverse() };
+}
+
+async function runMediaWorkflow(auth, opts, createFn, waitFn, downloadFn) {
+  const createResult = await createFn(auth, withDefaultSigner(opts));
+  if (!createResult.ok || !createResult.history_id) return createResult;
+  const waitResult = await waitFn(auth, {
+    ...opts,
+    "history-id": createResult.history_id,
+    "interval-ms": opts["interval-ms"] || 30000,
+    "timeout-ms": opts["timeout-ms"] || 86400000
+  });
+  let downloadResult;
+  if (opts.output && waitResult.ok) {
+    downloadResult = await downloadFn(auth, {
+      ...opts,
+      "history-id": createResult.history_id,
+      index: opts.index || 0
+    });
+  }
+  return {
+    ok: waitResult.ok,
+    history_id: createResult.history_id,
+    create: createResult,
+    wait: waitResult,
+    download: downloadResult
+  };
+}
+
 async function main() {
   const argv = process.argv.slice(2);
   if (argv.length === 0 || argv.includes("--help") || argv.includes("-h")) {
@@ -2382,14 +2488,33 @@ async function main() {
   const profile = opts.profile || "default";
 
   let result;
+  let recordJobType;
+  let recordJobOpts = opts;
   if (command === "login") {
     result = await login(profile, opts.port || 9222);
   } else if (command === "capture-auth") {
     result = await captureAuth(profile, opts.port || 9222);
+  } else if (command === "auth" && subcommand === "login") {
+    result = await login(profile, opts.port || 9222);
+  } else if (command === "auth" && subcommand === "capture") {
+    result = await captureAuth(profile, opts.port || 9222);
+  } else if (command === "auth" && subcommand === "status") {
+    const auth = await loadAuth(profile);
+    result = {
+      ok: true,
+      profile,
+      auth: {
+        sessionid: redact(auth.sessionid),
+        xmst_len: auth.xmst?.length || 0,
+        captured_at: auth.captured_at
+      }
+    };
   } else if (command === "params") {
     result = listParams();
   } else if (command === "auth" && subcommand === "save") {
     result = await saveAuth(profile, opts.sessionid);
+  } else if (command === "jobs" && subcommand === "list") {
+    result = await listJobs(opts);
   } else if (command === "session") {
     const auth = await loadAuth(profile);
     result = await requestJson(auth, "POST", "/passport/account/info/v2", {
@@ -2408,12 +2533,72 @@ async function main() {
   } else if (command === "generate-image") {
     const auth = await loadAuth(profile);
     result = await generateImage(auth, opts);
+    recordJobType = "image";
   } else if (command === "generate-video") {
     const auth = await loadAuth(profile);
     result = await generateVideo(auth, opts);
+    recordJobType = "video";
   } else if (command === "generate-audio") {
     const auth = await loadAuth(profile);
     result = await generateAudio(auth, opts);
+    recordJobType = "audio";
+  } else if (command === "video" && subcommand === "create") {
+    const auth = await loadAuth(profile);
+    recordJobOpts = { model: "seedance-2.0-vip", ...opts };
+    result = await generateVideo(auth, withDefaultSigner(recordJobOpts));
+    recordJobType = "video";
+  } else if (command === "video" && subcommand === "status") {
+    const auth = await loadAuth(profile);
+    result = await checkMedia(auth, opts["history-id"]);
+  } else if (command === "video" && subcommand === "wait") {
+    const auth = await loadAuth(profile);
+    result = await waitMedia(auth, {
+      "interval-ms": 30000,
+      "timeout-ms": 86400000,
+      ...opts
+    });
+  } else if (command === "video" && subcommand === "download") {
+    const auth = await loadAuth(profile);
+    result = await downloadMedia(auth, opts);
+  } else if (command === "video" && subcommand === "run") {
+    const auth = await loadAuth(profile);
+    recordJobOpts = { model: "seedance-2.0-vip", ...opts };
+    result = await runMediaWorkflow(auth, recordJobOpts, generateVideo, waitMedia, downloadMedia);
+    recordJobType = "video";
+  } else if (command === "image" && subcommand === "create") {
+    const auth = await loadAuth(profile);
+    result = await generateImage(auth, withDefaultSigner(opts));
+    recordJobType = "image";
+  } else if (command === "image" && subcommand === "status") {
+    const auth = await loadAuth(profile);
+    result = await checkImage(auth, opts["history-id"]);
+  } else if (command === "image" && subcommand === "wait") {
+    const auth = await loadAuth(profile);
+    result = await waitImage(auth, opts);
+  } else if (command === "image" && subcommand === "download") {
+    const auth = await loadAuth(profile);
+    result = await downloadImage(auth, opts);
+  } else if (command === "image" && subcommand === "run") {
+    const auth = await loadAuth(profile);
+    result = await runMediaWorkflow(auth, opts, generateImage, waitImage, downloadImage);
+    recordJobType = "image";
+  } else if (command === "audio" && subcommand === "create") {
+    const auth = await loadAuth(profile);
+    result = await generateAudio(auth, withDefaultSigner(opts));
+    recordJobType = "audio";
+  } else if (command === "audio" && subcommand === "status") {
+    const auth = await loadAuth(profile);
+    result = await checkMedia(auth, opts["history-id"]);
+  } else if (command === "audio" && subcommand === "wait") {
+    const auth = await loadAuth(profile);
+    result = await waitMedia(auth, opts);
+  } else if (command === "audio" && subcommand === "download") {
+    const auth = await loadAuth(profile);
+    result = await downloadMedia(auth, opts);
+  } else if (command === "audio" && subcommand === "run") {
+    const auth = await loadAuth(profile);
+    result = await runMediaWorkflow(auth, opts, generateAudio, waitMedia, downloadMedia);
+    recordJobType = "audio";
   } else if (command === "upload-image") {
     const auth = await loadAuth(profile);
     if (!opts.image || opts.image === true) throw new Error("--image is required");
@@ -2452,6 +2637,7 @@ async function main() {
     throw new Error(`Unknown command: ${[command, subcommand].filter(Boolean).join(" ")}`);
   }
 
+  if (recordJobType) await appendJob({ type: recordJobType, result: result.create || result, opts: recordJobOpts, profile });
   console.log(JSON.stringify(result, null, 2));
 }
 
