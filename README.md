@@ -54,6 +54,28 @@ npm link
 jimeng --help
 ```
 
+Install shell completion after linking:
+
+```bash
+jimeng completion zsh > "${fpath[1]}/_jimeng"
+exec zsh
+```
+
+For bash or fish:
+
+```bash
+jimeng completion bash > ~/.jimeng-completion.bash
+echo 'source ~/.jimeng-completion.bash' >> ~/.bashrc
+
+jimeng completion fish > ~/.config/fish/completions/jimeng.fish
+```
+
+The machine-readable command registry is available with:
+
+```bash
+jimeng commands list
+```
+
 ## Structure
 
 - `bin/jimeng.mjs`: CLI parsing, auth capture, and command routing.

@@ -43,6 +43,8 @@ Usage:
   jimeng auth capture [--profile default] [--port 9222]
   jimeng auth status [--profile default]
   jimeng config list|get|set [key] [value]
+  jimeng completion zsh|bash|fish
+  jimeng commands list
   jimeng doctor [--profile default]
 
   jimeng video create --prompt <text> [--model seedance-2.0-vip] [--ratio 16:9] [--duration 5]
@@ -101,6 +103,145 @@ Notes:
   Auth is stored under ~/.jimeng-cli/profiles/<profile>/auth.json.
   login opens an external Chrome profile under ~/.jimeng-cli/browser-profiles/<profile>.
 `;
+}
+
+const COMPLETION_COMMANDS = {
+  auth: ["login", "capture", "status", "save"],
+  config: ["list", "get", "set"],
+  completion: ["zsh", "bash", "fish"],
+  commands: ["list"],
+  video: ["create", "status", "queue", "wait", "download", "run"],
+  image: ["create", "status", "queue", "wait", "download", "run"],
+  audio: ["create", "status", "queue", "wait", "download", "run"],
+  models: ["list"],
+  history: ["list"],
+  jobs: ["list", "sync", "add", "status"]
+};
+
+const TOP_LEVEL_COMMANDS = [
+  ...Object.keys(COMPLETION_COMMANDS),
+  "doctor",
+  "params",
+  "session",
+  "credits",
+  "agent-chat",
+  "generate-image",
+  "generate-video",
+  "generate-audio",
+  "upload-image",
+  "check-image",
+  "wait-image",
+  "download-image",
+  "check-media",
+  "queue-media",
+  "wait-media",
+  "download-media",
+  "download"
+];
+
+const COMMON_FLAGS = [
+  "--profile",
+  "--prompt",
+  "--text",
+  "--model",
+  "--ratio",
+  "--resolution",
+  "--duration",
+  "--voice",
+  "--history-id",
+  "--index",
+  "--output",
+  "--output-dir",
+  "--interval-ms",
+  "--timeout-ms",
+  "--limit",
+  "--pages",
+  "--type",
+  "--offset",
+  "--reference-image",
+  "--reference-uri",
+  "--image",
+  "--url",
+  "--port",
+  "--node-sign",
+  "--local-sign",
+  "--browser-sign",
+  "--retry-count",
+  "--retry-delay-ms",
+  "--compact",
+  "--quiet",
+  "--help"
+];
+
+function commandRegistry() {
+  return {
+    ok: true,
+    commands: TOP_LEVEL_COMMANDS.map((command) => ({
+      command,
+      subcommands: COMPLETION_COMMANDS[command] || [],
+      flags: COMMON_FLAGS
+    }))
+  };
+}
+
+function shellCompletion(shell) {
+  const commands = TOP_LEVEL_COMMANDS.join(" ");
+  const flags = COMMON_FLAGS.join(" ");
+  const subcommands = Object.entries(COMPLETION_COMMANDS)
+    .map(([command, items]) => `${command}:${items.join(",")}`)
+    .join(" ");
+  if (shell === "zsh") {
+    return `#compdef jimeng
+_jimeng() {
+  local -a commands flags subs
+  commands=(${commands})
+  flags=(${flags})
+  case "$words[2]" in
+${Object.entries(COMPLETION_COMMANDS).map(([command, items]) => `    ${command}) subs=(${items.join(" ")}) ;;`).join("\n")}
+    *) subs=() ;;
+  esac
+  if (( CURRENT == 2 )); then
+    _describe 'command' commands
+  elif (( CURRENT == 3 && $#subs > 0 )); then
+    _describe 'subcommand' subs
+  else
+    _describe 'flag' flags
+  fi
+}
+compdef _jimeng jimeng
+`;
+  }
+  if (shell === "bash") {
+    return `_jimeng_completion() {
+  local cur prev command
+  COMPREPLY=()
+  cur="\${COMP_WORDS[COMP_CWORD]}"
+  prev="\${COMP_WORDS[COMP_CWORD-1]}"
+  command="\${COMP_WORDS[1]}"
+  if [[ \${COMP_CWORD} -eq 1 ]]; then
+    COMPREPLY=( $(compgen -W "${commands}" -- "$cur") )
+    return 0
+  fi
+  case "$command" in
+${Object.entries(COMPLETION_COMMANDS).map(([command, items]) => `    ${command}) [[ \${COMP_CWORD} -eq 2 ]] && COMPREPLY=( $(compgen -W "${items.join(" ")}" -- "$cur") ) && return 0 ;;`).join("\n")}
+  esac
+  COMPREPLY=( $(compgen -W "${flags}" -- "$cur") )
+}
+complete -F _jimeng_completion jimeng
+`;
+  }
+  if (shell === "fish") {
+    const lines = [
+      "complete -c jimeng -f",
+      ...TOP_LEVEL_COMMANDS.map((command) => `complete -c jimeng -n "__fish_use_subcommand" -a "${command}"`),
+      ...Object.entries(COMPLETION_COMMANDS).flatMap(([command, items]) =>
+        items.map((item) => `complete -c jimeng -n "__fish_seen_subcommand_from ${command}" -a "${item}"`)
+      ),
+      ...COMMON_FLAGS.map((flag) => `complete -c jimeng -l ${flag.slice(2)}`)
+    ];
+    return `${lines.join("\n")}\n`;
+  }
+  throw new Error("completion shell must be zsh, bash, or fish");
 }
 
 function parseArgs(argv) {
@@ -479,6 +620,14 @@ async function main() {
     return;
   }
   const { command, subcommand, opts } = parseArgs(argv);
+  if (command === "completion") {
+    process.stdout.write(shellCompletion(subcommand || positional(opts, 0) || "zsh"));
+    return;
+  }
+  if (command === "commands" && (!subcommand || subcommand === "list")) {
+    console.log(JSON.stringify(commandRegistry(), null, opts.compact ? 0 : 2));
+    return;
+  }
   const profile = opts.profile || "default";
   const config = await loadConfig();
   configureClient({
