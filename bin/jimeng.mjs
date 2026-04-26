@@ -152,21 +152,27 @@ Usage:
 
   jimeng video create --prompt <text> [--model seedance-2.0-vip] [--ratio 16:9] [--duration 5]
   jimeng video status --history-id <id>
+  jimeng video queue --history-id <id>
   jimeng video wait --history-id <id> [--interval-ms 30000] [--timeout-ms 86400000]
   jimeng video download --history-id <id> --index 0 --output <path>
   jimeng video run --prompt <text> --output <path> [--model seedance-2.0-vip]
 
   jimeng image create --prompt <text> [--model jimeng-4.5] [--ratio 1:1] [--resolution 2k] [--reference-image <path>] [--reference-uri <tos-uri>]
   jimeng image status --history-id <id>
+  jimeng image queue --history-id <id>
   jimeng image wait --history-id <id>
   jimeng image download --history-id <id> --index 0 --output <path>
 
   jimeng audio create --text <text> [--voice zhishuang-nvda]
   jimeng audio status --history-id <id>
+  jimeng audio queue --history-id <id>
   jimeng audio wait --history-id <id>
   jimeng audio download --history-id <id> --index 0 --output <path>
 
+  jimeng models list
   jimeng jobs list
+  jimeng jobs add --history-id <id> --type video|image|audio
+  jimeng jobs status [--limit 20]
 
 Compatibility commands:
   node bin/jimeng.mjs login --profile default [--port 9222]
@@ -184,6 +190,7 @@ Compatibility commands:
   node bin/jimeng.mjs wait-image --profile default --history-id <id> [--interval-ms 10000] [--timeout-ms 1800000]
   node bin/jimeng.mjs download-image --profile default --history-id <id> --index 0 --output <path>
   node bin/jimeng.mjs check-media --profile default --history-id <id>
+  node bin/jimeng.mjs queue-media --profile default --history-id <id>
   node bin/jimeng.mjs wait-media --profile default --history-id <id> [--interval-ms 10000] [--timeout-ms 1800000]
   node bin/jimeng.mjs download-media --profile default --history-id <id> --index 0 --output <path>
   node bin/jimeng.mjs download --url <url> --output <path>
@@ -226,7 +233,9 @@ function parseArgs(argv) {
 function listParams() {
   return {
     ok: true,
-    models: Object.entries(IMAGE_MODEL_MAP).map(([alias, req_key]) => ({ alias, req_key })),
+    image_models: Object.entries(IMAGE_MODEL_MAP).map(([alias, req_key]) => ({ alias, req_key })),
+    video_models: Object.entries(VIDEO_MODEL_MAP).map(([alias, config]) => ({ alias, ...config })),
+    voices: Object.entries(VOICE_MAP).map(([alias, voice]) => ({ alias, id: voice.id, name: voice.name, sample_rate: voice.sample_rate })),
     resolutions: Object.fromEntries(Object.entries(RESOLUTION_OPTIONS).map(([resolution, ratios]) => [
       resolution,
       Object.fromEntries(Object.entries(ratios).map(([ratio, config]) => [
@@ -246,7 +255,7 @@ function listParams() {
       video_model: Object.keys(VIDEO_MODEL_MAP),
       video_ratio: ["16:9"],
       video_duration: "seconds, default 5",
-      voice: Object.entries(VOICE_MAP).map(([alias, voice]) => ({ alias, id: voice.id, name: voice.name }))
+      voice: Object.keys(VOICE_MAP)
     }
   };
 }
@@ -2145,6 +2154,33 @@ async function checkMedia(auth, historyId) {
   };
 }
 
+async function checkQueue(auth, historyId) {
+  if (!historyId || historyId === true) throw new Error("--history-id is required");
+  const result = await requestJson(auth, "POST", "/mweb/v1/get_history_queue_info", {
+    data: { history_ids: [historyId] },
+    params: { da_version: DRAFT_VERSION },
+    redact: false
+  });
+  const queue = result.parsed?.[historyId];
+  return {
+    ok: result.ok,
+    status: result.status,
+    endpoint: result.endpoint,
+    history_id: historyId,
+    queue: queue ? {
+      status: queue.status,
+      queue_idx: queue.queue_info?.queue_idx,
+      queue_status: queue.queue_info?.queue_status,
+      queue_length: queue.queue_info?.queue_length,
+      priority: queue.queue_info?.priority,
+      interval_seconds: queue.queue_info?.polling_config?.interval_seconds,
+      timeout_seconds: queue.queue_info?.polling_config?.timeout_seconds,
+      forecast_generate_cost: queue.forecast_cost_time?.forecast_generate_cost,
+      forecast_queue_cost: queue.forecast_cost_time?.forecast_queue_cost
+    } : null
+  };
+}
+
 async function downloadImage(auth, opts) {
   const historyId = opts["history-id"];
   if (!historyId || historyId === true) throw new Error("--history-id is required");
@@ -2354,8 +2390,7 @@ async function waitImage(auth, opts) {
   let latest;
   while (Date.now() <= deadline) {
     latest = await checkImage(auth, historyId);
-    if (latest.image_urls?.length > 0) return latest;
-    const record = latest.parsed?.[historyId];
+    if (latest.image_url_count > 0 && latest.parsed?.status === 50) return latest;
     if (latest.parsed?.status === 30 || latest.parsed?.fail_code) return latest;
     if (latest.parsed?.status === 50) return latest;
     await new Promise((resolve) => setTimeout(resolve, intervalMs));
@@ -2434,13 +2469,12 @@ async function appendJob({ type, result, opts, profile }) {
   await appendFile(file, `${JSON.stringify(job)}\n`, { mode: 0o600 });
 }
 
-async function listJobs(opts = {}) {
-  const limit = Number(opts.limit || 20);
+async function readJobs(limit = 20) {
   let text = "";
   try {
     text = await readFile(jobsPath(), "utf8");
   } catch {
-    return { ok: true, jobs: [] };
+    return [];
   }
   const jobs = text.split("\n").filter(Boolean).map((line) => {
     try {
@@ -2449,7 +2483,57 @@ async function listJobs(opts = {}) {
       return null;
     }
   }).filter(Boolean);
-  return { ok: true, jobs: jobs.slice(-limit).reverse() };
+  return jobs.slice(-limit).reverse();
+}
+
+async function listJobs(opts = {}) {
+  return { ok: true, jobs: await readJobs(Number(opts.limit || 20)) };
+}
+
+async function addJob(opts, profile) {
+  const historyId = opts["history-id"];
+  if (!historyId || historyId === true) throw new Error("--history-id is required");
+  const type = opts.type || "media";
+  if (!["video", "image", "audio", "media"].includes(type)) throw new Error("--type must be video, image, audio, or media");
+  const file = jobsPath();
+  await mkdir(dirname(file), { recursive: true, mode: 0o700 });
+  const job = {
+    ts: new Date().toISOString(),
+    profile,
+    type,
+    history_id: historyId,
+    prompt: opts.prompt,
+    model: opts.model,
+    manual: true
+  };
+  await appendFile(file, `${JSON.stringify(job)}\n`, { mode: 0o600 });
+  return { ok: true, job };
+}
+
+async function statusJobs(auth, opts = {}) {
+  const jobs = await readJobs(Number(opts.limit || 20));
+  const statuses = [];
+  for (const job of jobs) {
+    try {
+      const status = job.type === "image"
+        ? await checkImage(auth, job.history_id)
+        : await checkMedia(auth, job.history_id);
+      statuses.push({
+        ...job,
+        ok: status.ok,
+        status: status.parsed?.status,
+        model: status.parsed?.model,
+        media_count: status.media_count,
+        image_url_count: status.image_url_count,
+        item_count: status.parsed?.item_count,
+        fail_code: status.parsed?.fail_code,
+        fail_msg: status.parsed?.fail_msg
+      });
+    } catch (error) {
+      statuses.push({ ...job, ok: false, error: error.message });
+    }
+  }
+  return { ok: true, jobs: statuses };
 }
 
 async function runMediaWorkflow(auth, opts, createFn, waitFn, downloadFn) {
@@ -2511,10 +2595,17 @@ async function main() {
     };
   } else if (command === "params") {
     result = listParams();
+  } else if (command === "models" && subcommand === "list") {
+    result = listParams();
   } else if (command === "auth" && subcommand === "save") {
     result = await saveAuth(profile, opts.sessionid);
   } else if (command === "jobs" && subcommand === "list") {
     result = await listJobs(opts);
+  } else if (command === "jobs" && subcommand === "add") {
+    result = await addJob(opts, profile);
+  } else if (command === "jobs" && subcommand === "status") {
+    const auth = await loadAuth(profile);
+    result = await statusJobs(auth, opts);
   } else if (command === "session") {
     const auth = await loadAuth(profile);
     result = await requestJson(auth, "POST", "/passport/account/info/v2", {
@@ -2550,6 +2641,9 @@ async function main() {
   } else if (command === "video" && subcommand === "status") {
     const auth = await loadAuth(profile);
     result = await checkMedia(auth, opts["history-id"]);
+  } else if (command === "video" && subcommand === "queue") {
+    const auth = await loadAuth(profile);
+    result = await checkQueue(auth, opts["history-id"]);
   } else if (command === "video" && subcommand === "wait") {
     const auth = await loadAuth(profile);
     result = await waitMedia(auth, {
@@ -2572,6 +2666,9 @@ async function main() {
   } else if (command === "image" && subcommand === "status") {
     const auth = await loadAuth(profile);
     result = await checkImage(auth, opts["history-id"]);
+  } else if (command === "image" && subcommand === "queue") {
+    const auth = await loadAuth(profile);
+    result = await checkQueue(auth, opts["history-id"]);
   } else if (command === "image" && subcommand === "wait") {
     const auth = await loadAuth(profile);
     result = await waitImage(auth, opts);
@@ -2589,6 +2686,9 @@ async function main() {
   } else if (command === "audio" && subcommand === "status") {
     const auth = await loadAuth(profile);
     result = await checkMedia(auth, opts["history-id"]);
+  } else if (command === "audio" && subcommand === "queue") {
+    const auth = await loadAuth(profile);
+    result = await checkQueue(auth, opts["history-id"]);
   } else if (command === "audio" && subcommand === "wait") {
     const auth = await loadAuth(profile);
     result = await waitMedia(auth, opts);
@@ -2625,6 +2725,9 @@ async function main() {
   } else if (command === "check-media") {
     const auth = await loadAuth(profile);
     result = await checkMedia(auth, opts["history-id"]);
+  } else if (command === "queue-media") {
+    const auth = await loadAuth(profile);
+    result = await checkQueue(auth, opts["history-id"]);
   } else if (command === "wait-media") {
     const auth = await loadAuth(profile);
     result = await waitMedia(auth, opts);

@@ -101,6 +101,7 @@ Check, wait, and download:
 
 ```bash
 jimeng video status --profile default --history-id "<history_id>"
+jimeng video queue --profile default --history-id "<history_id>"
 jimeng video wait --profile default --history-id "<history_id>" --interval-ms 30000
 jimeng video download --profile default --history-id "<history_id>" --index 0 --output outputs/video.mp4
 ```
@@ -127,7 +128,10 @@ jimeng audio create --profile default --text "接口回归测试。"
 List recent submitted jobs:
 
 ```bash
+jimeng models list
 jimeng jobs list --limit 20
+jimeng jobs add --history-id "<history_id>" --type video
+jimeng jobs status --limit 20
 ```
 
 ## Compatibility Commands
@@ -215,7 +219,7 @@ node bin/jimeng.mjs download-media \
   --output outputs/media-0.mp3
 ```
 
-Video generation payload is implemented from browser capture, but direct replay is currently blocked by Jimeng risk control:
+Video generation payload is implemented from browser capture. Use `--node-sign` for the current pure Node signer:
 
 ```bash
 node bin/jimeng.mjs generate-video \
@@ -259,6 +263,10 @@ Verified locally:
 - `generate-video --browser-sign --port 9222` now reaches Jimeng business validation with current browser-generated `msToken` and 192-character `a_bogus`; the latest real test returned `ret=1310` / `exceed_model_parallel_max` because the account already had too many queued video tasks.
 - `generate-video --local-sign` now reaches the same Jimeng business validation using locally executed `bdms-1.0.1.20.js`; the latest real test returned `ret=1310` with `msToken_len=184` and `a_bogus_len=192`.
 - `generate-video --node-sign` now submits successfully using pure Node VM signing; the latest real test returned `history_id=34581829134860`, `msToken_len=184`, and `a_bogus_len=176`.
+- `video status --history-id 34581829134860` confirmed `status=50`, `model=Seedance 2.0 VIP`, and one 1280x720 MP4 result.
+- `video queue --history-id 34581829134860` confirmed the queue endpoint and returned `queue_status=3`, `queue_length=0`.
+- `video download --history-id 34581829134860 --index 0` saved `outputs/video-node-sign-34581829134860.mp4`; `file` confirmed it is an MP4.
+- `jobs add` and `jobs status` were verified against `history_id=34581829134860`.
 - Browser-operated `配音生成` with voice `直爽女大` succeeded.
 - CLI `generate-audio --text "接口回归测试。"` succeeded with `history_id=34564885937676`.
 - `wait-media --history-id 34564885937676` confirmed two MP3 results.
@@ -277,9 +285,9 @@ Verified in the logged-in in-app browser after explicit approval for a real test
 Known gaps:
 
 - Local `--reference-image` upload creates ImageX objects, but Jimeng audit returns `ret=3020 download file failed`.
-- Direct video replay returns `ret=4013`; browser UI submission is the current working path.
-- Browser-signed video replay is implemented; current blocker is the account/server concurrency limit (`ret=1310`) when too many video jobs are already queued.
+- Unsigned direct video replay returns `ret=4013`; use `--node-sign`, `--local-sign`, or `--browser-sign`.
 - Digital-human and action-copy generation require media/template selection. Their config endpoints are captured but generation commands are not implemented yet.
+- `jobs list/status` tracks tasks created or manually added through the CLI. It does not yet import the whole website history feed.
 - Normal status output intentionally redacts signed URLs; use `download-image` or `download-media` for file export.
 
 ## Sources
