@@ -1,4 +1,6 @@
 node_modules/
+.build/
+dist/
 .DS_Store
 auth.json
 captures/

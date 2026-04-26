@@ -70,6 +70,16 @@ echo 'source ~/.jimeng-completion.bash' >> ~/.bashrc
 jimeng completion fish > ~/.config/fish/completions/jimeng.fish
 ```
 
+Build a local single-file executable for the current platform with Node 22+:
+
+```bash
+npm install
+npm run build:binary
+./dist/jimeng-$(node -p "process.platform + '-' + process.arch") --help
+```
+
+The binary embeds the current Node runtime and the CLI bundle. It still reads auth/config from `~/.jimeng-cli`, downloads the `bdms` runtime cache when needed, and builds only for the current platform/architecture.
+
 The machine-readable command registry is available with:
 
 ```bash
