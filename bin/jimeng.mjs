@@ -585,7 +585,11 @@ async function traceSigner(auth, opts) {
   const traced = await traceNodeSignRequest({
     auth,
     url: await signerUrl(opts),
-    body: await signerBody(opts)
+    body: await signerBody(opts),
+    opIds: effectiveTraceIds(opts),
+    opPcMin: opts["op-pc-min"],
+    opPcMax: opts["op-pc-max"],
+    valueLimit: opts["value-limit"]
   });
   const signedUrl = new URL(traced.signedRequest.url);
   const trace = traced.trace;
@@ -606,6 +610,10 @@ async function traceSigner(auth, opts) {
       }])),
     trace_count: trace.length,
     trace_sample: trace.slice(Math.max(0, trace.length - Number(opts.limit || 40))),
+    callsites_count: traced.callsites.length,
+    callsites_sample: traced.callsites.slice(0, Number(opts["callsite-limit"] || 40)),
+    op_trace_count: traced.opTrace.length,
+    op_trace_sample: traced.opTrace.slice(0, Number(opts["op-limit"] || 0)),
     msToken_len: (signedUrl.searchParams.get("msToken") || "").length,
     a_bogus_len: (signedUrl.searchParams.get("a_bogus") || "").length
   };
