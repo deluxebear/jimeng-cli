@@ -54,6 +54,13 @@ npm link
 jimeng --help
 ```
 
+## Structure
+
+- `bin/jimeng.mjs`: CLI parsing, auth capture, image/audio commands, job/history orchestration.
+- `lib/client.mjs`: shared Jimeng HTTP client, default query params, cookie construction, JSON response handling.
+- `lib/signer.mjs`: browser signer, headless local signer, pure Node `bdms` VM signer, signed request replay.
+- `lib/video.mjs`: video model map, Seedance request builder, and video generation flow.
+
 ## Auth
 
 Recommended external-browser flow:
