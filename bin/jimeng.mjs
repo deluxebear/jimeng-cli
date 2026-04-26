@@ -98,7 +98,7 @@ Compatibility commands:
 Notes:
   generate-image may consume Jimeng credits.
   New create/run commands use --node-sign by default.
-  --algorithm-sign is experimental; it compares pure JS pieces and falls back to --node-sign until a_bogus is complete.
+  --algorithm-sign uses the pure JS bdms fn150 signer and does not need the official VM when signing succeeds.
   --node-sign runs the official bdms VM in a pure Node vm browser shim to create msToken/a_bogus.
   --local-sign uses the official bdms script in a headless local Chromium page to create current msToken/a_bogus query params.
   generate-video --browser-sign uses the logged-in Chrome page as a fallback signer.
