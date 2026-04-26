@@ -86,6 +86,15 @@ The machine-readable command registry is available with:
 jimeng commands list
 ```
 
+Experimental pure JS signer workbench:
+
+```bash
+jimeng signer compare --profile default
+jimeng signer fixture --profile default --name default
+```
+
+`--algorithm-sign` is intentionally experimental. It currently verifies the pure JS canonicalization and `msToken` derivation, then falls back to the VM-backed `--node-sign` because the `a_bogus`/`fn150` translation is not complete. Golden fixtures are written under `~/.jimeng-cli/fixtures/` and should not be committed.
+
 ## Structure
 
 - `bin/jimeng.mjs`: CLI parsing, auth capture, and command routing.
@@ -137,6 +146,7 @@ The CLI redacts saved credentials in output.
 ## Product Commands
 
 New commands default to pure Node VM signing (`--node-sign`), so generation does not require an open browser after auth capture.
+`--algorithm-sign` can be used as an experimental signer path; until the pure JS `a_bogus` algorithm is complete, it reports `algorithm_fallback: "node-sign"` in the request summary.
 
 Create a video job:
 

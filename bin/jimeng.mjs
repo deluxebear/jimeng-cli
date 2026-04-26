@@ -30,7 +30,7 @@ import {
   waitMedia,
   withDefaultSigner
 } from "../lib/media.mjs";
-import { browserSignRequest, localSignRequest, nodeSignRequest, requestSignedJson } from "../lib/signer.mjs";
+import { algorithmSignRequest, browserSignRequest, compareAlgorithmSignRequest, createBdmsFixture, localSignRequest, nodeSignRequest, requestSignedJson } from "../lib/signer.mjs";
 import { VIDEO_MODEL_MAP, generateVideo as generateVideoRequest } from "../lib/video.mjs";
 
 const DEFAULT_MODEL = "jimeng-4.5";
@@ -45,6 +45,7 @@ Usage:
   jimeng config list|get|set [key] [value]
   jimeng completion zsh|bash|fish
   jimeng commands list
+  jimeng signer compare|fixture [--profile default] [--name default]
   jimeng doctor [--profile default]
 
   jimeng video create --prompt <text> [--model seedance-2.0-vip] [--ratio 16:9] [--duration 5]
@@ -81,9 +82,9 @@ Compatibility commands:
   node bin/jimeng.mjs session --profile default
   node bin/jimeng.mjs credits --profile default
   node bin/jimeng.mjs agent-chat --profile default --prompt <text>
-  node bin/jimeng.mjs generate-image --profile default --prompt <text> [--model jimeng-4.5] [--ratio 1:1] [--resolution 2k] [--reference-image <path>] [--reference-uri <tos-uri>] [--node-sign | --local-sign]
-  node bin/jimeng.mjs generate-video --profile default --prompt <text> [--model seedance-2.0-fast] [--ratio 16:9] [--duration 5] [--node-sign | --local-sign | --browser-sign --port 9222]
-  node bin/jimeng.mjs generate-audio --profile default --text <text> [--voice zhishuang-nvda] [--node-sign | --local-sign]
+  node bin/jimeng.mjs generate-image --profile default --prompt <text> [--model jimeng-4.5] [--ratio 1:1] [--resolution 2k] [--reference-image <path>] [--reference-uri <tos-uri>] [--algorithm-sign | --node-sign | --local-sign]
+  node bin/jimeng.mjs generate-video --profile default --prompt <text> [--model seedance-2.0-fast] [--ratio 16:9] [--duration 5] [--algorithm-sign | --node-sign | --local-sign | --browser-sign --port 9222]
+  node bin/jimeng.mjs generate-audio --profile default --text <text> [--voice zhishuang-nvda] [--algorithm-sign | --node-sign | --local-sign]
   node bin/jimeng.mjs upload-image --profile default --image <path>
   node bin/jimeng.mjs check-image --profile default --history-id <id>
   node bin/jimeng.mjs wait-image --profile default --history-id <id> [--interval-ms 10000] [--timeout-ms 1800000]
@@ -97,6 +98,7 @@ Compatibility commands:
 Notes:
   generate-image may consume Jimeng credits.
   New create/run commands use --node-sign by default.
+  --algorithm-sign is experimental; it compares pure JS pieces and falls back to --node-sign until a_bogus is complete.
   --node-sign runs the official bdms VM in a pure Node vm browser shim to create msToken/a_bogus.
   --local-sign uses the official bdms script in a headless local Chromium page to create current msToken/a_bogus query params.
   generate-video --browser-sign uses the logged-in Chrome page as a fallback signer.
@@ -110,6 +112,7 @@ const COMPLETION_COMMANDS = {
   config: ["list", "get", "set"],
   completion: ["zsh", "bash", "fish"],
   commands: ["list"],
+  signer: ["compare", "fixture"],
   video: ["create", "status", "queue", "wait", "download", "run"],
   image: ["create", "status", "queue", "wait", "download", "run"],
   audio: ["create", "status", "queue", "wait", "download", "run"],
@@ -164,6 +167,7 @@ const COMMON_FLAGS = [
   "--url",
   "--port",
   "--node-sign",
+  "--algorithm-sign",
   "--local-sign",
   "--browser-sign",
   "--retry-count",
@@ -506,6 +510,7 @@ async function generateVideo(auth, opts) {
     makeUrl,
     requestJson,
     requestSignedJson,
+    algorithmSignRequest,
     nodeSignRequest,
     localSignRequest,
     browserSignRequest
@@ -514,6 +519,7 @@ async function generateVideo(auth, opts) {
 
 async function generateImage(auth, opts) {
   return generateImageRequest(auth, opts, {
+    algorithmSignRequest,
     nodeSignRequest,
     localSignRequest,
     requestSignedJson
@@ -522,10 +528,57 @@ async function generateImage(auth, opts) {
 
 async function generateAudio(auth, opts) {
   return generateAudioRequest(auth, opts, {
+    algorithmSignRequest,
     nodeSignRequest,
     localSignRequest,
     requestSignedJson
   });
+}
+
+async function signerBody(opts) {
+  if (opts.body && opts.body !== true) return JSON.parse(await readFile(opts.body, "utf8"));
+  return { doctor: true };
+}
+
+async function signerUrl(opts) {
+  if (opts.url && opts.url !== true) return new URL(opts.url);
+  return makeUrl("/mweb/v1/aigc_draft/generate");
+}
+
+async function compareSigner(auth, opts) {
+  return {
+    ok: true,
+    submitted: false,
+    algorithm: await compareAlgorithmSignRequest({
+      auth,
+      url: await signerUrl(opts),
+      body: await signerBody(opts)
+    })
+  };
+}
+
+async function createSignerFixture(auth, opts) {
+  const result = await createBdmsFixture({
+    auth,
+    url: await signerUrl(opts),
+    body: await signerBody(opts),
+    name: opts.name || "default",
+    meta: {
+      command: "signer fixture",
+      submitted: false,
+      note: "Private golden fixture for pure JS bdms algorithm development"
+    }
+  });
+  return {
+    ok: true,
+    submitted: false,
+    path: result.path,
+    algorithm_status: result.fixture.algorithm.status,
+    msToken_matches_xmst: result.fixture.vm.msToken_matches_xmst,
+    msToken_len: result.fixture.vm.msToken_len,
+    a_bogus_len: result.fixture.vm.a_bogus_len,
+    missing: result.fixture.algorithm.missing
+  };
 }
 
 async function doctor(profile, config) {
@@ -565,6 +618,24 @@ async function doctor(profile, config) {
       });
     } catch (error) {
       checks.push({ name: "node_sign", ok: false, submitted: false, error: error.message });
+    }
+    try {
+      const algorithm = await compareAlgorithmSignRequest({
+        auth,
+        url: makeUrl("/mweb/v1/aigc_draft/generate"),
+        body: { doctor: true }
+      });
+      checks.push({
+        name: "algorithm_sign",
+        ok: algorithm.compare.msToken_match,
+        status: algorithm.status,
+        submitted: false,
+        msToken_match: algorithm.compare.msToken_match,
+        a_bogus_match: algorithm.compare.a_bogus_match,
+        missing: algorithm.missing
+      });
+    } catch (error) {
+      checks.push({ name: "algorithm_sign", ok: false, submitted: false, error: error.message });
     }
   }
   return { ok: checks.every((check) => check.ok), profile, checks };
@@ -666,6 +737,12 @@ async function main() {
     result = await setConfigValue(effectiveOpts.key ?? positional(effectiveOpts, 0), effectiveOpts.value ?? positional(effectiveOpts, 1));
   } else if (command === "doctor") {
     result = await doctor(profile, config);
+  } else if (command === "signer" && subcommand === "compare") {
+    const auth = await loadAuth(profile);
+    result = await compareSigner(auth, effectiveOpts);
+  } else if (command === "signer" && subcommand === "fixture") {
+    const auth = await loadAuth(profile);
+    result = await createSignerFixture(auth, effectiveOpts);
   } else if (command === "params") {
     result = listParams();
   } else if (command === "models" && subcommand === "list") {
