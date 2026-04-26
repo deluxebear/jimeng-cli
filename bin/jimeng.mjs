@@ -172,7 +172,7 @@ Usage:
   jimeng models list
   jimeng history list [--limit 20] [--offset <next_offset>] [--type image|video|audio]
   jimeng jobs list
-  jimeng jobs sync [--limit 20] [--type image|video|audio]
+  jimeng jobs sync [--limit 20] [--pages 1] [--type image|video|audio]
   jimeng jobs add --history-id <id> --type video|image|audio
   jimeng jobs status [--limit 20]
 
@@ -2594,32 +2594,50 @@ async function addJob(opts, profile) {
 }
 
 async function syncJobs(auth, opts, profile) {
-  const history = await listHistory(auth, opts);
+  const pages = Math.max(1, Number(opts.pages || 1));
   const existing = new Set((await readJobs(10000)).map((job) => String(job.history_id)));
   const file = jobsPath();
   await mkdir(dirname(file), { recursive: true, mode: 0o700 });
   const added = [];
-  for (const record of history.records) {
-    if (!record.history_id || existing.has(record.history_id)) continue;
-    const job = {
-      ts: new Date().toISOString(),
-      profile,
-      type: record.type,
-      history_id: record.history_id,
-      model: record.model,
-      status: record.status,
-      synced: true
-    };
-    await appendFile(file, `${JSON.stringify(job)}\n`, { mode: 0o600 });
-    existing.add(record.history_id);
-    added.push(job);
+  const pageResults = [];
+  let offset = opts.offset;
+  for (let page = 0; page < pages; page += 1) {
+    const history = await listHistory(auth, { ...opts, offset });
+    pageResults.push({
+      page: page + 1,
+      scanned_count: history.count,
+      has_more: history.has_more,
+      next_offset: history.next_offset
+    });
+    for (const record of history.records) {
+      if (!record.history_id || existing.has(record.history_id)) continue;
+      const job = {
+        ts: new Date().toISOString(),
+        profile,
+        type: record.type,
+        history_id: record.history_id,
+        model: record.model,
+        status: record.status,
+        synced: true
+      };
+      await appendFile(file, `${JSON.stringify(job)}\n`, { mode: 0o600 });
+      existing.add(record.history_id);
+      added.push(job);
+    }
+    if (!history.has_more || !history.next_offset) {
+      offset = undefined;
+      break;
+    }
+    offset = history.next_offset;
   }
   return {
-    ok: history.ok,
-    endpoint: history.endpoint,
-    has_more: history.has_more,
-    next_offset: history.next_offset,
-    scanned_count: history.count,
+    ok: true,
+    endpoint: "/mweb/v1/get_history",
+    pages_scanned: pageResults.length,
+    pages: pageResults,
+    has_more: pageResults.at(-1)?.has_more || false,
+    next_offset: pageResults.at(-1)?.next_offset,
+    scanned_count: pageResults.reduce((sum, page) => sum + page.scanned_count, 0),
     added_count: added.length,
     added
   };
