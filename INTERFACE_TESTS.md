@@ -504,7 +504,8 @@ Additional creation-type endpoints captured by switching the menu:
 ## Known Gaps
 
 - Local `--reference-image` upload is not yet production-ready because Jimeng audit returns `3020 download file failed`.
-- Direct video replay is not production-ready because it returns `4013`; browser UI submission works with the same visible body shape, so anti-abuse query generation is still missing.
+- Unsigned direct video replay returns `4013`; use `--local-sign` or `--browser-sign` for `/mweb/v1/aigc_draft/generate` flows that require `msToken` / `a_bogus`.
+- The latest `generate-video --local-sign` test reached business validation (`ret=1310`, `exceed_model_parallel_max`) with `msToken_len=184` and `a_bogus_len=192`, so signing is no longer the blocker for that path.
 - Digital-human and action-copy generation need media/template selection before a real generation payload can be submitted. Their config and material-loading endpoints are captured, but not yet converted into generation commands.
 - Browser generation uses `draft_content.version=3.3.14` for several flows. The server sometimes returns older versions in stored history, but submit payloads should prefer `3.3.14`.
 - The CLI does not yet expose workspace list, unread count, or credit history commands, although their browser endpoints are captured.

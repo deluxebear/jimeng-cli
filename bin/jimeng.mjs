@@ -14,6 +14,48 @@ const DRAFT_VERSION = "3.3.14";
 const BASE_URL_CN = "https://jimeng.jianying.com";
 const DEFAULT_ASSISTANT_ID_CN = 513695;
 const DEFAULT_MODEL = "jimeng-4.5";
+const BDMS_VERSION = "1.0.1.20";
+const SDK_PAGE_ID = 28324;
+const SDK_USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36";
+const BDMS_URLS = [
+  "https://lf3-lv-buz.vlabstatic.com/obj/image-lvweb-buz/common/scripts/bdms-1.0.1.20.js",
+  "https://lf-c-flwb.bytetos.com/obj/rc-client-security/web/stable/1.0.1.20/bdms.js",
+  "https://lf-headquarters-speed.yhgfb-cn-static.com/obj/rc-client-security/web/stable/1.0.1.20/bdms.js"
+];
+const BDMS_PATHS = [
+  "/mweb/v1/generate",
+  "/mweb/v1/super_resolution",
+  "/mweb/v1/painting",
+  "/mweb/v1/aigc_draft/generate",
+  "/mweb/v1/normal_hd",
+  "/mweb/v1/doodle",
+  "/mweb/v1/batch_generate_video",
+  "/mweb/v1/mixblend",
+  "/mweb/v1/fusion",
+  "/mweb/v1/creation_agent/v2/conversation",
+  "/commerce/v1/subscription/make_unauto_order",
+  "/commerce/v1/benefits/credit_receive",
+  "/commerce/v1/purchase/make_order",
+  "/commerce/v3/trade/init_trade",
+  "/commerce/v2/subscription/sign_and_pay",
+  "/mweb/v1/get_explore",
+  "/mweb/v1/feed_short_video",
+  "/mweb/v1/feed",
+  "/mweb/v1/get_homepage",
+  "/mweb/v1/get_weekly_challenge_work_list",
+  "/mweb/v1/mget_item_info",
+  "/mweb/v1/get_item_info",
+  "/mweb/v1/get_history_by_ids",
+  "/mweb/v1/get_history",
+  "/mweb/v1/get_local_item_list",
+  "/mweb/search/v1/search",
+  "/lv/v1/user/update",
+  "/mweb/v1/publish",
+  "competition/v1/submit_artwork",
+  "/mweb/v1/mark_favorite",
+  "/mweb/v1/follow",
+  "/commerce/v3/trade/user/apply_order_refund"
+];
 
 const VIDEO_MODEL_MAP = {
   "seedance-2.0-fast": {
@@ -104,9 +146,9 @@ Usage:
   node bin/jimeng.mjs session --profile default
   node bin/jimeng.mjs credits --profile default
   node bin/jimeng.mjs agent-chat --profile default --prompt <text>
-  node bin/jimeng.mjs generate-image --profile default --prompt <text> [--model jimeng-4.5] [--ratio 1:1] [--resolution 2k] [--reference-image <path>] [--reference-uri <tos-uri>]
-  node bin/jimeng.mjs generate-video --profile default --prompt <text> [--model seedance-2.0-fast] [--ratio 16:9] [--duration 5] [--browser-sign --port 9222]
-  node bin/jimeng.mjs generate-audio --profile default --text <text> [--voice zhishuang-nvda]
+  node bin/jimeng.mjs generate-image --profile default --prompt <text> [--model jimeng-4.5] [--ratio 1:1] [--resolution 2k] [--reference-image <path>] [--reference-uri <tos-uri>] [--local-sign]
+  node bin/jimeng.mjs generate-video --profile default --prompt <text> [--model seedance-2.0-fast] [--ratio 16:9] [--duration 5] [--local-sign | --browser-sign --port 9222]
+  node bin/jimeng.mjs generate-audio --profile default --text <text> [--voice zhishuang-nvda] [--local-sign]
   node bin/jimeng.mjs upload-image --profile default --image <path>
   node bin/jimeng.mjs check-image --profile default --history-id <id>
   node bin/jimeng.mjs wait-image --profile default --history-id <id> [--interval-ms 10000] [--timeout-ms 1800000]
@@ -118,7 +160,8 @@ Usage:
 
 Notes:
   generate-image may consume Jimeng credits.
-  generate-video --browser-sign uses the logged-in Chrome page to create current msToken/a_bogus query params.
+  --local-sign uses the official bdms script in a headless local Chromium page to create current msToken/a_bogus query params.
+  generate-video --browser-sign uses the logged-in Chrome page as a fallback signer.
   Auth is stored under ~/.jimeng-cli/profiles/<profile>/auth.json.
   login opens an external Chrome profile under ~/.jimeng-cli/browser-profiles/<profile>.
 `;
@@ -217,6 +260,24 @@ async function saveAuth(profile, sessionid) {
   return { ok: true, profile, path: file, auth: { sessionid: redact(sessionid) } };
 }
 
+async function saveCapturedAuth(profile, auth) {
+  if (!auth.sessionid) throw new Error("Missing sessionid");
+  const file = authPath(profile);
+  await mkdir(dirname(file), { recursive: true, mode: 0o700 });
+  await writeFile(file, `${JSON.stringify(auth, null, 2)}\n`, { mode: 0o600 });
+  return {
+    ok: true,
+    profile,
+    path: file,
+    auth: {
+      sessionid: redact(auth.sessionid),
+      xmst_len: auth.xmst?.length || 0,
+      web_runtime_security_uid: auth.web_runtime_security_uid ? redact(auth.web_runtime_security_uid) : undefined,
+      msuuid: auth.msuuid ? redact(auth.msuuid) : undefined
+    }
+  };
+}
+
 async function loadAuth(profile) {
   const file = authPath(profile);
   const auth = JSON.parse(await readFile(file, "utf8"));
@@ -238,7 +299,29 @@ async function captureAuth(profile, port = 9222) {
       cookie_names: [...new Set(cookies.map((cookie) => cookie.name))].slice(0, 30)
     };
   }
-  return await saveAuth(profile, session.value);
+  const browserState = await readBrowserSecurityStorage(Number(port)).catch(() => ({}));
+  return await saveCapturedAuth(profile, {
+    sessionid: session.value,
+    ...browserState,
+    captured_at: new Date().toISOString()
+  });
+}
+
+async function readBrowserSecurityStorage(port) {
+  const { chromium } = requirePlaywright();
+  const browser = await chromium.connectOverCDP(`http://127.0.0.1:${port}`);
+  try {
+    const context = browser.contexts()[0];
+    const page = context?.pages().find((candidate) => candidate.url().includes("jimeng.jianying.com")) || context?.pages()[0];
+    if (!page) return {};
+    return await page.evaluate(() => ({
+      xmst: localStorage.getItem("xmst") || undefined,
+      web_runtime_security_uid: localStorage.getItem("web_runtime_security_uid") || undefined,
+      msuuid: localStorage.getItem("__msuuid__") || undefined
+    }));
+  } finally {
+    await browser.close().catch(() => {});
+  }
 }
 
 async function readCdpCookies(port) {
@@ -508,6 +591,122 @@ async function browserSignRequest({ port = 9222, url, body, referer }) {
   }
 }
 
+function sdkCachePath(name) {
+  return join(homedir(), ".jimeng-cli", "sdk", name);
+}
+
+async function loadBdmsSource() {
+  const cacheFile = sdkCachePath(`bdms-${BDMS_VERSION}.js`);
+  try {
+    return await readFile(cacheFile, "utf8");
+  } catch {}
+
+  const localCapture = join(process.cwd(), "captures", "signature", `bdms-${BDMS_VERSION}.js`);
+  try {
+    const source = await readFile(localCapture, "utf8");
+    await mkdir(dirname(cacheFile), { recursive: true, mode: 0o700 });
+    await writeFile(cacheFile, source, { mode: 0o600 });
+    return source;
+  } catch {}
+
+  let lastError;
+  for (const sourceUrl of BDMS_URLS) {
+    try {
+      const response = await fetch(sourceUrl);
+      if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
+      const source = await response.text();
+      if (!source.includes("window.bdms")) throw new Error("downloaded script does not expose window.bdms");
+      await mkdir(dirname(cacheFile), { recursive: true, mode: 0o700 });
+      await writeFile(cacheFile, source, { mode: 0o600 });
+      return source;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw new Error(`Unable to load bdms ${BDMS_VERSION}: ${lastError?.message || "unknown error"}`);
+}
+
+function bdmsInitConfig() {
+  return {
+    aid: DEFAULT_ASSISTANT_ID_CN,
+    pageId: SDK_PAGE_ID,
+    paths: BDMS_PATHS,
+    track: { mode: 2 }
+  };
+}
+
+async function localSignRequest({ auth, url, body }) {
+  if (!auth.xmst) {
+    throw new Error("Missing xmst in auth.json. Run capture-auth again from a logged-in Jimeng Chrome session.");
+  }
+  const { chromium } = requirePlaywright();
+  const bdmsSource = await loadBdmsSource();
+  const browser = await chromium.launch({ headless: true });
+  let captured;
+  try {
+    const context = await browser.newContext({
+      userAgent: SDK_USER_AGENT,
+      viewport: { width: 1280, height: 720 },
+      locale: "zh-CN"
+    });
+    const page = await context.newPage();
+    await page.route("**/mweb/v1/aigc_draft/generate**", async (route) => {
+      const request = route.request();
+      captured = {
+        url: request.url(),
+        method: request.method(),
+        headers: request.headers(),
+        postData: request.postData()
+      };
+      await route.fulfill({
+        status: 418,
+        contentType: "application/json",
+        body: JSON.stringify({ ret: "9999", errmsg: "blocked locally after signing" })
+      });
+    });
+    await page.route("https://jimeng.jianying.com/ai-tool/generate?type=image&workspace=0", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "text/html",
+        body: "<!doctype html><html><head></head><body>jimeng local signer</body></html>"
+      });
+    });
+    await page.goto("https://jimeng.jianying.com/ai-tool/generate?type=image&workspace=0", { waitUntil: "domcontentloaded" });
+    await page.evaluate(({ bdmsSource, config, authState }) => {
+      localStorage.setItem("xmst", authState.xmst);
+      if (authState.web_runtime_security_uid) localStorage.setItem("web_runtime_security_uid", authState.web_runtime_security_uid);
+      if (authState.msuuid) localStorage.setItem("__msuuid__", authState.msuuid);
+      (0, eval)(bdmsSource);
+      window.bdms.init(config);
+    }, {
+      bdmsSource,
+      config: bdmsInitConfig(),
+      authState: {
+        xmst: auth.xmst,
+        web_runtime_security_uid: auth.web_runtime_security_uid,
+        msuuid: auth.msuuid
+      }
+    });
+    await page.evaluate(async ({ targetUrl, payload }) => {
+      await fetch(targetUrl, {
+        method: "POST",
+        credentials: "include",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(payload)
+      }).catch(() => {});
+    }, { targetUrl: url.toString(), payload: body });
+    await page.waitForTimeout(250);
+    if (!captured) throw new Error("Timed out waiting for local bdms-signed Jimeng request");
+    const signedUrl = new URL(captured.url);
+    if (!signedUrl.searchParams.get("msToken") || !signedUrl.searchParams.get("a_bogus")) {
+      throw new Error("Local bdms did not add msToken/a_bogus to the request");
+    }
+    return captured;
+  } finally {
+    await browser.close().catch(() => {});
+  }
+}
+
 async function requestSignedJson(auth, uri, signedRequest, { referer, redact = true } = {}) {
   const response = await fetch(signedRequest.url, {
     method: signedRequest.method || "POST",
@@ -746,9 +945,42 @@ async function generateImage(auth, opts) {
     intelligentRatio: opts["intelligent-ratio"] === undefined ? undefined : (opts["intelligent-ratio"] === true || opts["intelligent-ratio"] === "true"),
     references: referenceUploads
   });
+  const referer = "https://jimeng.jianying.com/ai-tool/generate?type=image";
+  if (opts["local-sign"]) {
+    const signedRequest = await localSignRequest({
+      auth,
+      url: makeUrl("/mweb/v1/aigc_draft/generate"),
+      body: built.body
+    });
+    const signedUrl = new URL(signedRequest.url);
+    const result = await requestSignedJson(auth, "/mweb/v1/aigc_draft/generate", signedRequest, { referer });
+    return {
+      ...result,
+      request: {
+        model: opts.model || DEFAULT_MODEL,
+        ratio: opts.ratio || "1:1",
+        resolution: opts.resolution || "2k",
+        mode: built.mode,
+        reference_count: built.reference_count,
+        uploaded_references: referenceUploads.map((upload) => ({
+          uri: redact(upload.uri),
+          width: upload.width,
+          height: upload.height,
+          format: upload.format,
+          bytes: upload.bytes
+        })),
+        submit_id: built.submitId,
+        credit_consuming: true,
+        local_sign: true,
+        msToken_len: (signedUrl.searchParams.get("msToken") || "").length,
+        a_bogus_len: (signedUrl.searchParams.get("a_bogus") || "").length
+      },
+      history_id: result.parsed?.aigc_data?.history_record_id
+    };
+  }
   const result = await requestJson(auth, "POST", "/mweb/v1/aigc_draft/generate", {
     data: built.body,
-    headers: { referer: "https://jimeng.jianying.com/ai-tool/generate?type=image" }
+    headers: { referer }
   });
   return {
     ...result,
@@ -766,7 +998,8 @@ async function generateImage(auth, opts) {
         bytes: upload.bytes
       })),
       submit_id: built.submitId,
-      credit_consuming: true
+      credit_consuming: true,
+      local_sign: false
     },
     history_id: result.parsed?.aigc_data?.history_record_id
   };
@@ -894,6 +1127,26 @@ async function generateVideo(auth, opts) {
   });
   const params = { commerce_with_input_video: 1, da_version: DRAFT_VERSION, os: "mac" };
   const referer = "https://jimeng.jianying.com/ai-tool/generate?type=video&workspace=0";
+  if (opts["local-sign"]) {
+    const signedRequest = await localSignRequest({
+      auth,
+      url: makeUrl("/mweb/v1/aigc_draft/generate", params),
+      body: built.body
+    });
+    const signedUrl = new URL(signedRequest.url);
+    const result = await requestSignedJson(auth, "/mweb/v1/aigc_draft/generate", signedRequest, { referer });
+    return {
+      ...result,
+      request: {
+        ...built.request,
+        credit_consuming: true,
+        local_sign: true,
+        msToken_len: (signedUrl.searchParams.get("msToken") || "").length,
+        a_bogus_len: (signedUrl.searchParams.get("a_bogus") || "").length
+      },
+      history_id: result.parsed?.aigc_data?.history_record_id
+    };
+  }
   if (opts["browser-sign"]) {
     const signedRequest = await browserSignRequest({
       port: opts.port || 9222,
@@ -908,6 +1161,7 @@ async function generateVideo(auth, opts) {
       request: {
         ...built.request,
         credit_consuming: true,
+        local_sign: false,
         browser_sign: true,
         msToken_len: (signedUrl.searchParams.get("msToken") || "").length,
         a_bogus_len: (signedUrl.searchParams.get("a_bogus") || "").length
@@ -922,7 +1176,7 @@ async function generateVideo(auth, opts) {
   });
   return {
     ...result,
-    request: { ...built.request, credit_consuming: true, browser_sign: false },
+    request: { ...built.request, credit_consuming: true, local_sign: false, browser_sign: false },
     history_id: result.parsed?.aigc_data?.history_record_id
   };
 }
@@ -1016,13 +1270,34 @@ function buildAudioRequest({ text, voice = "zhishuang-nvda" }) {
 
 async function generateAudio(auth, opts) {
   const built = buildAudioRequest({ text: opts.text, voice: opts.voice || "zhishuang-nvda" });
+  const referer = "https://jimeng.jianying.com/ai-tool/generate?type=audio&workspace=0";
+  if (opts["local-sign"]) {
+    const signedRequest = await localSignRequest({
+      auth,
+      url: makeUrl("/mweb/v1/aigc_draft/generate"),
+      body: built.body
+    });
+    const signedUrl = new URL(signedRequest.url);
+    const result = await requestSignedJson(auth, "/mweb/v1/aigc_draft/generate", signedRequest, { referer });
+    return {
+      ...result,
+      request: {
+        ...built.request,
+        credit_consuming: true,
+        local_sign: true,
+        msToken_len: (signedUrl.searchParams.get("msToken") || "").length,
+        a_bogus_len: (signedUrl.searchParams.get("a_bogus") || "").length
+      },
+      history_id: result.parsed?.aigc_data?.history_record_id
+    };
+  }
   const result = await requestJson(auth, "POST", "/mweb/v1/aigc_draft/generate", {
     data: built.body,
-    headers: { referer: "https://jimeng.jianying.com/ai-tool/generate?type=audio&workspace=0" }
+    headers: { referer }
   });
   return {
     ...result,
-    request: { ...built.request, credit_consuming: true },
+    request: { ...built.request, credit_consuming: true, local_sign: false },
     history_id: result.parsed?.aigc_data?.history_record_id
   };
 }

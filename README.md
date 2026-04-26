@@ -170,11 +170,12 @@ node bin/jimeng.mjs generate-video \
   --model seedance-2.0-fast \
   --ratio 16:9 \
   --duration 5 \
-  --browser-sign \
-  --port 9222
+  --local-sign
 ```
 
-`--browser-sign` requires the external Chrome session from `login` to be running and logged in. It uses the live Jimeng page to generate current `msToken` / `a_bogus` query parameters, intercepts that signed request locally, then replays it from Node.
+`--local-sign` runs Jimeng's current `bdms-1.0.1.20.js` in a headless local Chromium page and appends current `msToken` / `a_bogus` query parameters before replaying from Node. Run `capture-auth` from a logged-in Chrome session first; it saves the `xmst` value required for `msToken`.
+
+`--browser-sign --port 9222` remains available as a fallback. It uses the live Jimeng page to generate current `msToken` / `a_bogus` query parameters, intercepts that signed request locally, then replays it from Node.
 
 Download a returned image URL:
 
@@ -190,7 +191,7 @@ Verified locally:
 - Help/usage output.
 - Auth save path and redacted output with a fake session value.
 - External Chrome login/capture commands were added for CDP-based auth capture without the in-app browser.
-- External Chrome CDP capture succeeded after login and saved a redacted `sessionid` profile.
+- External Chrome CDP capture succeeded after login and saved a redacted `sessionid` profile plus `xmst_len=184` for local `msToken` signing.
 - `session` read-only check returned HTTP 200.
 - `credits` read-only check returned HTTP 200.
 - Real CLI `generate-image` succeeded with `history_id=34567179802892`.
@@ -200,6 +201,7 @@ Verified locally:
 - Browser-operated `视频生成` succeeded in submitting a `Seedance 2.0 Fast` job with `history_id=34554355869452`, but the queue was very long.
 - Direct CLI `generate-video` without browser signing returns Jimeng `ret=4013` risk-control rejection.
 - `generate-video --browser-sign --port 9222` now reaches Jimeng business validation with current browser-generated `msToken` and 192-character `a_bogus`; the latest real test returned `ret=1310` / `exceed_model_parallel_max` because the account already had too many queued video tasks.
+- `generate-video --local-sign` now reaches the same Jimeng business validation using locally executed `bdms-1.0.1.20.js`; the latest real test returned `ret=1310` with `msToken_len=184` and `a_bogus_len=192`.
 - Browser-operated `配音生成` with voice `直爽女大` succeeded.
 - CLI `generate-audio --text "接口回归测试。"` succeeded with `history_id=34564885937676`.
 - `wait-media --history-id 34564885937676` confirmed two MP3 results.
