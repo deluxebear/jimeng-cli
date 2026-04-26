@@ -129,7 +129,10 @@ List recent submitted jobs:
 
 ```bash
 jimeng models list
+jimeng history list --limit 20
+jimeng history list --limit 20 --type audio
 jimeng jobs list --limit 20
+jimeng jobs sync --limit 20
 jimeng jobs add --history-id "<history_id>" --type video
 jimeng jobs status --limit 20
 ```
@@ -267,6 +270,9 @@ Verified locally:
 - `video queue --history-id 34581829134860` confirmed the queue endpoint and returned `queue_status=3`, `queue_length=0`.
 - `video download --history-id 34581829134860 --index 0` saved `outputs/video-node-sign-34581829134860.mp4`; `file` confirmed it is an MP4.
 - `jobs add` and `jobs status` were verified against `history_id=34581829134860`.
+- `history list --limit 3` was verified against `/mweb/v1/get_history`; it returned recent Seedance 2.0 VIP jobs and `next_offset`.
+- `history list --type audio` was verified and returned completed MP3 records.
+- `jobs sync --limit 3` imported website history into the local job store and is idempotent on repeated runs.
 - Browser-operated `配音生成` with voice `直爽女大` succeeded.
 - CLI `generate-audio --text "接口回归测试。"` succeeded with `history_id=34564885937676`.
 - `wait-media --history-id 34564885937676` confirmed two MP3 results.
@@ -287,7 +293,7 @@ Known gaps:
 - Local `--reference-image` upload creates ImageX objects, but Jimeng audit returns `ret=3020 download file failed`.
 - Unsigned direct video replay returns `ret=4013`; use `--node-sign`, `--local-sign`, or `--browser-sign`.
 - Digital-human and action-copy generation require media/template selection. Their config endpoints are captured but generation commands are not implemented yet.
-- `jobs list/status` tracks tasks created or manually added through the CLI. It does not yet import the whole website history feed.
+- `jobs sync` imports one page of website history at a time. Use the returned `next_offset` with `history list --offset ...` to page manually; automatic multi-page sync is not implemented yet.
 - Normal status output intentionally redacts signed URLs; use `download-image` or `download-media` for file export.
 
 ## Sources

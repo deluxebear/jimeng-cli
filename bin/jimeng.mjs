@@ -170,7 +170,9 @@ Usage:
   jimeng audio download --history-id <id> --index 0 --output <path>
 
   jimeng models list
+  jimeng history list [--limit 20] [--offset <next_offset>] [--type image|video|audio]
   jimeng jobs list
+  jimeng jobs sync [--limit 20] [--type image|video|audio]
   jimeng jobs add --history-id <id> --type video|image|audio
   jimeng jobs status [--limit 20]
 
@@ -2181,6 +2183,87 @@ async function checkQueue(auth, historyId) {
   };
 }
 
+function historyRequestBody(opts = {}) {
+  const type = opts.type;
+  const body = {
+    count: Number(opts.limit || opts.count || 20),
+    history_type_list: type === "audio" ? [7] : [1, 2, 4, 3, 5, 6, 7, 8, 10],
+    mode: "workbench",
+    history_option: {
+      story_id: "",
+      multi_size_image_config: [
+        { height: 100, width: 100, format: "webp" },
+        { height: 360, width: 360, format: "webp" },
+        { height: 720, width: 720, format: "webp" }
+      ],
+      only_favorited: false,
+      workspace_id: Number(opts.workspace || 0)
+    },
+    image_info: IMAGE_INFO,
+    origin_image_info: { ...IMAGE_INFO, width: 96 },
+    is_pack_origin: true
+  };
+  if (opts.offset && opts.offset !== true && Number(opts.offset) > 0) body.offset = Number(opts.offset);
+  if (type === "audio") {
+    body.history_option.with_task_status = [50];
+  }
+  return body;
+}
+
+function inferHistoryType(record) {
+  if ((record.item_list || []).some((item) => item.video)) return "video";
+  if ((record.item_list || []).some((item) => item.audio)) return "audio";
+  if ((record.item_list || []).some((item) => item.image)) return "image";
+  if (record.generate_type === 10) return "video";
+  if (record.generate_type === 44 || record.generate_type === 7) return "audio";
+  return "media";
+}
+
+function summarizeHistoryListRecord(record) {
+  const type = inferHistoryType(record);
+  const media = primaryMedia(record);
+  return {
+    history_id: String(record.history_record_id || record.id || ""),
+    type,
+    status: record.status,
+    model: record.model_info?.model_name,
+    generate_type: record.generate_type,
+    created_time: record.created_time,
+    finish_time: record.finish_time || record.task?.finish_time,
+    item_count: Array.isArray(record.item_list) ? record.item_list.length : 0,
+    media_count: media.length,
+    media: media.slice(0, 4).map((item) => ({
+      type: item.type,
+      item_id: item.item_id,
+      width: item.width,
+      height: item.height,
+      format: item.format,
+      duration: item.duration,
+      size: item.size,
+      url_sample: redactUrl(item.url)
+    }))
+  };
+}
+
+async function listHistory(auth, opts = {}) {
+  const result = await requestJson(auth, "POST", "/mweb/v1/get_history", {
+    data: historyRequestBody(opts),
+    redact: false
+  });
+  const records = result.parsed?.records_list || [];
+  const type = opts.type;
+  const filtered = type ? records.filter((record) => inferHistoryType(record) === type) : records;
+  return {
+    ok: result.ok,
+    status: result.status,
+    endpoint: result.endpoint,
+    has_more: Boolean(result.parsed?.has_more),
+    next_offset: result.parsed?.next_offset,
+    count: filtered.length,
+    records: filtered.map(summarizeHistoryListRecord)
+  };
+}
+
 async function downloadImage(auth, opts) {
   const historyId = opts["history-id"];
   if (!historyId || historyId === true) throw new Error("--history-id is required");
@@ -2510,6 +2593,38 @@ async function addJob(opts, profile) {
   return { ok: true, job };
 }
 
+async function syncJobs(auth, opts, profile) {
+  const history = await listHistory(auth, opts);
+  const existing = new Set((await readJobs(10000)).map((job) => String(job.history_id)));
+  const file = jobsPath();
+  await mkdir(dirname(file), { recursive: true, mode: 0o700 });
+  const added = [];
+  for (const record of history.records) {
+    if (!record.history_id || existing.has(record.history_id)) continue;
+    const job = {
+      ts: new Date().toISOString(),
+      profile,
+      type: record.type,
+      history_id: record.history_id,
+      model: record.model,
+      status: record.status,
+      synced: true
+    };
+    await appendFile(file, `${JSON.stringify(job)}\n`, { mode: 0o600 });
+    existing.add(record.history_id);
+    added.push(job);
+  }
+  return {
+    ok: history.ok,
+    endpoint: history.endpoint,
+    has_more: history.has_more,
+    next_offset: history.next_offset,
+    scanned_count: history.count,
+    added_count: added.length,
+    added
+  };
+}
+
 async function statusJobs(auth, opts = {}) {
   const jobs = await readJobs(Number(opts.limit || 20));
   const statuses = [];
@@ -2597,10 +2712,16 @@ async function main() {
     result = listParams();
   } else if (command === "models" && subcommand === "list") {
     result = listParams();
+  } else if (command === "history" && subcommand === "list") {
+    const auth = await loadAuth(profile);
+    result = await listHistory(auth, opts);
   } else if (command === "auth" && subcommand === "save") {
     result = await saveAuth(profile, opts.sessionid);
   } else if (command === "jobs" && subcommand === "list") {
     result = await listJobs(opts);
+  } else if (command === "jobs" && subcommand === "sync") {
+    const auth = await loadAuth(profile);
+    result = await syncJobs(auth, opts, profile);
   } else if (command === "jobs" && subcommand === "add") {
     result = await addJob(opts, profile);
   } else if (command === "jobs" && subcommand === "status") {
