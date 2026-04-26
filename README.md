@@ -56,10 +56,13 @@ jimeng --help
 
 ## Structure
 
-- `bin/jimeng.mjs`: CLI parsing, auth capture, image/audio commands, job/history orchestration.
+- `bin/jimeng.mjs`: CLI parsing, auth capture, and command routing.
 - `lib/client.mjs`: shared Jimeng HTTP client, default query params, cookie construction, JSON response handling.
 - `lib/signer.mjs`: browser signer, headless local signer, pure Node `bdms` VM signer, signed request replay.
+- `lib/image.mjs`: image model map, ratio/resolution table, image generation, reference URI handling, ImageX upload.
 - `lib/video.mjs`: video model map, Seedance request builder, and video generation flow.
+- `lib/audio.mjs`: TTS voice map, audio request builder, and audio generation flow.
+- `lib/media.mjs`: history/status/queue, media extraction, downloads, jobs list/sync/status, run workflow.
 
 ## Auth
 
