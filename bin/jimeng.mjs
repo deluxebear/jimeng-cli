@@ -4,7 +4,8 @@ import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { spawn } from "node:child_process";
 import { VOICE_MAP, generateAudio as generateAudioRequest } from "../lib/audio.mjs";
-import { BASE_URL_CN, DEFAULT_ASSISTANT_ID_CN, DRAFT_VERSION, makeUrl, requestJson, uuid } from "../lib/client.mjs";
+import { configureClient, BASE_URL_CN, DEFAULT_ASSISTANT_ID_CN, DRAFT_VERSION, makeUrl, requestJson, uuid } from "../lib/client.mjs";
+import { getConfigValue, loadConfig, setConfigValue } from "../lib/config.mjs";
 import {
   IMAGE_MODEL_MAP,
   RESOLUTION_OPTIONS,
@@ -41,25 +42,27 @@ Usage:
   jimeng auth login [--profile default] [--port 9222]
   jimeng auth capture [--profile default] [--port 9222]
   jimeng auth status [--profile default]
+  jimeng config list|get|set [key] [value]
+  jimeng doctor [--profile default]
 
   jimeng video create --prompt <text> [--model seedance-2.0-vip] [--ratio 16:9] [--duration 5]
   jimeng video status --history-id <id>
   jimeng video queue --history-id <id>
   jimeng video wait --history-id <id> [--interval-ms 30000] [--timeout-ms 86400000]
-  jimeng video download --history-id <id> --index 0 --output <path>
+  jimeng video download --history-id <id> --index 0 [--output <path>]
   jimeng video run --prompt <text> --output <path> [--model seedance-2.0-vip]
 
   jimeng image create --prompt <text> [--model jimeng-4.5] [--ratio 1:1] [--resolution 2k] [--reference-image <path>] [--reference-uri <tos-uri>]
   jimeng image status --history-id <id>
   jimeng image queue --history-id <id>
   jimeng image wait --history-id <id>
-  jimeng image download --history-id <id> --index 0 --output <path>
+  jimeng image download --history-id <id> --index 0 [--output <path>]
 
   jimeng audio create --text <text> [--voice zhishuang-nvda]
   jimeng audio status --history-id <id>
   jimeng audio queue --history-id <id>
   jimeng audio wait --history-id <id>
-  jimeng audio download --history-id <id> --index 0 --output <path>
+  jimeng audio download --history-id <id> --index 0 [--output <path>]
 
   jimeng models list
   jimeng history list [--limit 20] [--offset <next_offset>] [--type image|video|audio]
@@ -122,6 +125,19 @@ function parseArgs(argv) {
     }
   }
   return { command, subcommand, opts };
+}
+
+function positional(opts, index) {
+  return opts._?.[index];
+}
+
+function withConfigDefaults(opts, config) {
+  return {
+    ...opts,
+    "output-dir": opts["output-dir"] ?? opts.output_dir ?? config.output_dir,
+    retry_count: opts["retry-count"] ?? opts.retry_count ?? config.retry_count,
+    retry_delay_ms: opts["retry-delay-ms"] ?? opts.retry_delay_ms ?? config.retry_delay_ms
+  };
 }
 
 function listParams() {
@@ -371,6 +387,48 @@ async function generateAudio(auth, opts) {
   });
 }
 
+async function doctor(profile, config) {
+  const checks = [];
+  checks.push({ name: "config", ok: true, output_dir: config.output_dir, retry_count: config.retry_count, retry_delay_ms: config.retry_delay_ms });
+  let auth;
+  try {
+    auth = await loadAuth(profile);
+    checks.push({ name: "auth", ok: true, profile, sessionid: redact(auth.sessionid), xmst_len: auth.xmst?.length || 0 });
+  } catch (error) {
+    checks.push({ name: "auth", ok: false, error: error.message });
+  }
+  if (auth) {
+    const session = await requestJson(auth, "POST", "/passport/account/info/v2", {
+      params: { account_sdk_source: "web" }
+    });
+    checks.push({ name: "session", ok: session.ok, status: session.status, endpoint: session.endpoint });
+    const credits = await requestJson(auth, "POST", "/commerce/v1/benefits/user_credit", {
+      data: {},
+      headers: { referer: "https://jimeng.jianying.com/ai-tool/image/generate" },
+      noDefaultParams: true
+    });
+    checks.push({ name: "credits", ok: credits.ok, status: credits.status, endpoint: credits.endpoint });
+    try {
+      const signed = await nodeSignRequest({
+        auth,
+        url: makeUrl("/mweb/v1/aigc_draft/generate"),
+        body: { doctor: true }
+      });
+      const signedUrl = new URL(signed.url);
+      checks.push({
+        name: "node_sign",
+        ok: true,
+        msToken_len: (signedUrl.searchParams.get("msToken") || "").length,
+        a_bogus_len: (signedUrl.searchParams.get("a_bogus") || "").length,
+        submitted: false
+      });
+    } catch (error) {
+      checks.push({ name: "node_sign", ok: false, submitted: false, error: error.message });
+    }
+  }
+  return { ok: checks.every((check) => check.ok), profile, checks };
+}
+
 async function agentChat(auth, opts) {
   if (!opts.prompt || opts.prompt === true) throw new Error("--prompt is required");
   const conversationId = opts["conversation-id"] || uuid();
@@ -422,18 +480,24 @@ async function main() {
   }
   const { command, subcommand, opts } = parseArgs(argv);
   const profile = opts.profile || "default";
+  const config = await loadConfig();
+  configureClient({
+    retry_count: opts["retry-count"] ?? opts.retry_count ?? config.retry_count,
+    retry_delay_ms: opts["retry-delay-ms"] ?? opts.retry_delay_ms ?? config.retry_delay_ms
+  });
+  const effectiveOpts = withConfigDefaults(opts, config);
 
   let result;
   let recordJobType;
-  let recordJobOpts = opts;
+  let recordJobOpts = effectiveOpts;
   if (command === "login") {
-    result = await login(profile, opts.port || 9222);
+    result = await login(profile, effectiveOpts.port || 9222);
   } else if (command === "capture-auth") {
-    result = await captureAuth(profile, opts.port || 9222);
+    result = await captureAuth(profile, effectiveOpts.port || 9222);
   } else if (command === "auth" && subcommand === "login") {
-    result = await login(profile, opts.port || 9222);
+    result = await login(profile, effectiveOpts.port || 9222);
   } else if (command === "auth" && subcommand === "capture") {
-    result = await captureAuth(profile, opts.port || 9222);
+    result = await captureAuth(profile, effectiveOpts.port || 9222);
   } else if (command === "auth" && subcommand === "status") {
     const auth = await loadAuth(profile);
     result = {
@@ -445,25 +509,33 @@ async function main() {
         captured_at: auth.captured_at
       }
     };
+  } else if (command === "config" && (!subcommand || subcommand === "list")) {
+    result = await getConfigValue();
+  } else if (command === "config" && subcommand === "get") {
+    result = await getConfigValue(effectiveOpts.key || positional(effectiveOpts, 0));
+  } else if (command === "config" && subcommand === "set") {
+    result = await setConfigValue(effectiveOpts.key ?? positional(effectiveOpts, 0), effectiveOpts.value ?? positional(effectiveOpts, 1));
+  } else if (command === "doctor") {
+    result = await doctor(profile, config);
   } else if (command === "params") {
     result = listParams();
   } else if (command === "models" && subcommand === "list") {
     result = listParams();
   } else if (command === "history" && subcommand === "list") {
     const auth = await loadAuth(profile);
-    result = await listHistory(auth, opts);
+    result = await listHistory(auth, effectiveOpts);
   } else if (command === "auth" && subcommand === "save") {
-    result = await saveAuth(profile, opts.sessionid);
+    result = await saveAuth(profile, effectiveOpts.sessionid);
   } else if (command === "jobs" && subcommand === "list") {
-    result = await listJobs(opts);
+    result = await listJobs(effectiveOpts);
   } else if (command === "jobs" && subcommand === "sync") {
     const auth = await loadAuth(profile);
-    result = await syncJobs(auth, opts, profile);
+    result = await syncJobs(auth, effectiveOpts, profile);
   } else if (command === "jobs" && subcommand === "add") {
-    result = await addJob(opts, profile);
+    result = await addJob(effectiveOpts, profile);
   } else if (command === "jobs" && subcommand === "status") {
     const auth = await loadAuth(profile);
-    result = await statusJobs(auth, opts);
+    result = await statusJobs(auth, effectiveOpts);
   } else if (command === "session") {
     const auth = await loadAuth(profile);
     result = await requestJson(auth, "POST", "/passport/account/info/v2", {
@@ -478,22 +550,22 @@ async function main() {
     });
   } else if (command === "agent-chat") {
     const auth = await loadAuth(profile);
-    result = await agentChat(auth, opts);
+    result = await agentChat(auth, effectiveOpts);
   } else if (command === "generate-image") {
     const auth = await loadAuth(profile);
-    result = await generateImage(auth, opts);
+    result = await generateImage(auth, effectiveOpts);
     recordJobType = "image";
   } else if (command === "generate-video") {
     const auth = await loadAuth(profile);
-    result = await generateVideo(auth, opts);
+    result = await generateVideo(auth, effectiveOpts);
     recordJobType = "video";
   } else if (command === "generate-audio") {
     const auth = await loadAuth(profile);
-    result = await generateAudio(auth, opts);
+    result = await generateAudio(auth, effectiveOpts);
     recordJobType = "audio";
   } else if (command === "video" && subcommand === "create") {
     const auth = await loadAuth(profile);
-    recordJobOpts = { model: "seedance-2.0-vip", ...opts };
+    recordJobOpts = { model: "seedance-2.0-vip", ...effectiveOpts };
     result = await generateVideo(auth, withDefaultSigner(recordJobOpts));
     recordJobType = "video";
   } else if (command === "video" && subcommand === "status") {
@@ -507,19 +579,19 @@ async function main() {
     result = await waitMedia(auth, {
       "interval-ms": 30000,
       "timeout-ms": 86400000,
-      ...opts
+      ...effectiveOpts
     });
   } else if (command === "video" && subcommand === "download") {
     const auth = await loadAuth(profile);
-    result = await downloadMedia(auth, opts);
+    result = await downloadMedia(auth, effectiveOpts);
   } else if (command === "video" && subcommand === "run") {
     const auth = await loadAuth(profile);
-    recordJobOpts = { model: "seedance-2.0-vip", ...opts };
+    recordJobOpts = { model: "seedance-2.0-vip", ...effectiveOpts };
     result = await runMediaWorkflow(auth, recordJobOpts, generateVideo, waitMedia, downloadMedia);
     recordJobType = "video";
   } else if (command === "image" && subcommand === "create") {
     const auth = await loadAuth(profile);
-    result = await generateImage(auth, withDefaultSigner(opts));
+    result = await generateImage(auth, withDefaultSigner(effectiveOpts));
     recordJobType = "image";
   } else if (command === "image" && subcommand === "status") {
     const auth = await loadAuth(profile);
@@ -529,17 +601,17 @@ async function main() {
     result = await checkQueue(auth, opts["history-id"]);
   } else if (command === "image" && subcommand === "wait") {
     const auth = await loadAuth(profile);
-    result = await waitImage(auth, opts);
+    result = await waitImage(auth, effectiveOpts);
   } else if (command === "image" && subcommand === "download") {
     const auth = await loadAuth(profile);
-    result = await downloadImage(auth, opts);
+    result = await downloadImage(auth, effectiveOpts);
   } else if (command === "image" && subcommand === "run") {
     const auth = await loadAuth(profile);
-    result = await runMediaWorkflow(auth, opts, generateImage, waitImage, downloadImage);
+    result = await runMediaWorkflow(auth, effectiveOpts, generateImage, waitImage, downloadImage);
     recordJobType = "image";
   } else if (command === "audio" && subcommand === "create") {
     const auth = await loadAuth(profile);
-    result = await generateAudio(auth, withDefaultSigner(opts));
+    result = await generateAudio(auth, withDefaultSigner(effectiveOpts));
     recordJobType = "audio";
   } else if (command === "audio" && subcommand === "status") {
     const auth = await loadAuth(profile);
@@ -549,18 +621,18 @@ async function main() {
     result = await checkQueue(auth, opts["history-id"]);
   } else if (command === "audio" && subcommand === "wait") {
     const auth = await loadAuth(profile);
-    result = await waitMedia(auth, opts);
+    result = await waitMedia(auth, effectiveOpts);
   } else if (command === "audio" && subcommand === "download") {
     const auth = await loadAuth(profile);
-    result = await downloadMedia(auth, opts);
+    result = await downloadMedia(auth, effectiveOpts);
   } else if (command === "audio" && subcommand === "run") {
     const auth = await loadAuth(profile);
-    result = await runMediaWorkflow(auth, opts, generateAudio, waitMedia, downloadMedia);
+    result = await runMediaWorkflow(auth, effectiveOpts, generateAudio, waitMedia, downloadMedia);
     recordJobType = "audio";
   } else if (command === "upload-image") {
     const auth = await loadAuth(profile);
-    if (!opts.image || opts.image === true) throw new Error("--image is required");
-    const upload = await uploadImage(auth, opts.image);
+    if (!effectiveOpts.image || effectiveOpts.image === true) throw new Error("--image is required");
+    const upload = await uploadImage(auth, effectiveOpts.image);
     result = {
       ok: true,
       image: {
@@ -576,10 +648,10 @@ async function main() {
     result = await checkImage(auth, opts["history-id"]);
   } else if (command === "wait-image") {
     const auth = await loadAuth(profile);
-    result = await waitImage(auth, opts);
+    result = await waitImage(auth, effectiveOpts);
   } else if (command === "download-image") {
     const auth = await loadAuth(profile);
-    result = await downloadImage(auth, opts);
+    result = await downloadImage(auth, effectiveOpts);
   } else if (command === "check-media") {
     const auth = await loadAuth(profile);
     result = await checkMedia(auth, opts["history-id"]);
@@ -588,21 +660,23 @@ async function main() {
     result = await checkQueue(auth, opts["history-id"]);
   } else if (command === "wait-media") {
     const auth = await loadAuth(profile);
-    result = await waitMedia(auth, opts);
+    result = await waitMedia(auth, effectiveOpts);
   } else if (command === "download-media") {
     const auth = await loadAuth(profile);
-    result = await downloadMedia(auth, opts);
+    result = await downloadMedia(auth, effectiveOpts);
   } else if (command === "download") {
-    result = await download(opts.url, opts.output);
+    result = await download(effectiveOpts.url, effectiveOpts.output);
   } else {
     throw new Error(`Unknown command: ${[command, subcommand].filter(Boolean).join(" ")}`);
   }
 
   if (recordJobType) await appendJob({ type: recordJobType, result: result.create || result, opts: recordJobOpts, profile });
-  console.log(JSON.stringify(result, null, 2));
+  if (!effectiveOpts.quiet) console.log(JSON.stringify(result, null, effectiveOpts.compact ? 0 : 2));
 }
 
 main().catch((error) => {
-  console.error(JSON.stringify({ ok: false, error: error.message }, null, 2));
+  if (!process.argv.includes("--quiet")) {
+    console.error(JSON.stringify({ ok: false, code: error.code || "ERR_CLI", error: error.message }, null, 2));
+  }
   process.exitCode = 1;
 });

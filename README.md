@@ -58,6 +58,7 @@ jimeng --help
 
 - `bin/jimeng.mjs`: CLI parsing, auth capture, and command routing.
 - `lib/client.mjs`: shared Jimeng HTTP client, default query params, cookie construction, JSON response handling.
+- `lib/config.mjs`: user-level CLI config for output paths, retry count, and retry delay.
 - `lib/signer.mjs`: browser signer, headless local signer, pure Node `bdms` VM signer, signed request replay.
 - `lib/image.mjs`: image model map, ratio/resolution table, image generation, reference URI handling, ImageX upload.
 - `lib/video.mjs`: video model map, Seedance request builder, and video generation flow.
@@ -82,6 +83,15 @@ Check the stored auth summary:
 
 ```bash
 jimeng auth status --profile default
+```
+
+Check local configuration and environment:
+
+```bash
+jimeng config list
+jimeng config set output_dir outputs
+jimeng config set retry_count 1
+jimeng doctor --profile default
 ```
 
 Save a `sessionid` from the Jimeng browser cookie:
@@ -113,7 +123,7 @@ Check, wait, and download:
 jimeng video status --profile default --history-id "<history_id>"
 jimeng video queue --profile default --history-id "<history_id>"
 jimeng video wait --profile default --history-id "<history_id>" --interval-ms 30000
-jimeng video download --profile default --history-id "<history_id>" --index 0 --output outputs/video.mp4
+jimeng video download --profile default --history-id "<history_id>" --index 0
 ```
 
 Create, wait, and download in one command:
