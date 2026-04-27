@@ -1,21 +1,27 @@
 {
   "name": "jimeng-cli",
   "version": "0.1.0",
-  "private": true,
+  "description": "Authenticated Jimeng/Jianying web workflow CLI for image, video, audio, agent, and history operations.",
   "type": "module",
   "bin": {
     "jimeng": "./bin/jimeng.mjs"
   },
+  "files": [
+    "bin/",
+    "lib/",
+    "skills/",
+    "README.md",
+    "INTERFACE_TESTS.md",
+    "PARAMS.md",
+    "SIGNATURE.md"
+  ],
   "scripts": {
-    "build:binary": "node scripts/build-binary.mjs",
-    "check": "node --check bin/jimeng.mjs && node --check lib/client.mjs && node --check lib/config.mjs && node --check lib/bdms-algorithm.mjs && node --check lib/signer.mjs && node --check lib/video.mjs && node --check lib/audio.mjs && node --check lib/image.mjs && node --check lib/media.mjs && node --check scripts/build-binary.mjs",
-    "help": "node bin/jimeng.mjs --help"
+    "check": "node --check bin/jimeng.mjs && node --check lib/client.mjs && node --check lib/config.mjs && node --check lib/bdms-algorithm.mjs && node --check lib/signer.mjs && node --check lib/video.mjs && node --check lib/audio.mjs && node --check lib/image.mjs && node --check lib/media.mjs",
+    "help": "node bin/jimeng.mjs --help",
+    "prepack": "npm run check",
+    "pack:dry": "npm pack --dry-run"
   },
   "engines": {
     "node": ">=18"
-  },
-  "devDependencies": {
-    "esbuild": "^0.28.0",
-    "postject": "^1.0.0-alpha.6"
   }
 }

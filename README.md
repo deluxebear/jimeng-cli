@@ -1,156 +1,129 @@
-# Jimeng CLI
+# jimeng-cli
 
-This workspace contains a Node.js CLI for replaying authenticated Jimeng web workflows. It supports image, video, audio, and status/download flows, with pure Node VM signing for Jimeng's current `bdms` request protection.
+`jimeng-cli` 是一个本地命令行工具，用来把即梦 / 剪映 Web 端的已登录工作流转换成可复用的 CLI。它基于真实浏览器流量研究接口，复用你自己的登录态，支持图片生成、视频生成、配音生成、数字人 / Agent 工作流、任务轮询、历史记录和媒体下载。
 
-Target page:
+这个项目不是即梦或剪映官方工具。接口来自授权登录后的浏览器行为分析，页面或接口变更后可能需要重新捕获并更新实现。
 
-```text
-https://jimeng.jianying.com/ai-tool/generate?type=image&workspace=0
-```
+## 安装
 
-## Findings
-
-The image browser workflow is:
-
-1. Open the image generator page.
-2. Enter an image prompt.
-3. Choose model/ratio/resolution options.
-4. Start an async image-generation job.
-5. Poll the history record until generated image items appear.
-6. Download image URLs from the returned item list.
-
-Public reverse-engineered implementations and the live page agree on these key endpoints for the China site:
-
-| Purpose | Method | Endpoint | Side effect |
-| --- | --- | --- | --- |
-| Account smoke test | `POST` | `/passport/account/info/v2` | Read-only |
-| Credit check | `POST` | `/commerce/v1/benefits/user_credit` | Read-only |
-| Start image generation | `POST` | `/mweb/v1/aigc_draft/generate` | Consumes credits |
-| Poll image result | `POST` | `/mweb/v1/get_history_by_ids` | Read-only |
-| Agent conversation | `POST` | `/mweb/v1/creation_agent/v2/conversation` | May create conversation state |
-| Start audio generation | `POST` | `/mweb/v1/aigc_draft/generate` | Consumes credits |
-| Start video generation | `POST` | `/mweb/v1/aigc_draft/generate` | Consumes credits |
-
-Authentication is cookie/session based. This CLI stores the Jimeng `sessionid` plus browser security values needed for local signing in:
-
-```text
-~/.jimeng-cli/profiles/<profile>/auth.json
-```
-
-Do not commit auth files, cookies, captures, generated signed URLs, or downloaded private outputs.
-
-## Install
-
-No package install is required for basic use.
+直接用 `npx` 运行：
 
 ```bash
-node bin/jimeng.mjs --help
+npx jimeng-cli --help
 ```
 
-Optionally link it in a local shell:
+全局安装后使用 `jimeng` 命令：
 
 ```bash
+npm install -g jimeng-cli
+jimeng --help
+```
+
+本地开发：
+
+```bash
+npm install
 npm link
 jimeng --help
 ```
 
-Install shell completion after linking:
+从本地 tarball 安装：
 
 ```bash
-jimeng completion zsh > "${fpath[1]}/_jimeng"
-exec zsh
+npm pack
+npm install -g ./jimeng-cli-0.1.0.tgz
 ```
 
-For bash or fish:
+安装配套的 Agent Skill：
 
 ```bash
-jimeng completion bash > ~/.jimeng-completion.bash
-echo 'source ~/.jimeng-completion.bash' >> ~/.bashrc
-
-jimeng completion fish > ~/.config/fish/completions/jimeng.fish
+npx skills add <owner>/<repo> --skill jimeng-cli
 ```
 
-Build a local single-file executable for the current platform with Node 22+:
+全局安装到 Agent：
 
 ```bash
-npm install
-npm run build:binary
-./dist/jimeng-$(node -p "process.platform + '-' + process.arch") --help
+npx skills add <owner>/<repo> --skill jimeng-cli -g -y
 ```
 
-The binary embeds the current Node runtime and the CLI bundle. It still reads auth/config from `~/.jimeng-cli`, downloads the `bdms` runtime cache when needed, and builds only for the current platform/architecture.
+把 `<owner>/<repo>` 替换为实际发布这个仓库的 GitHub 仓库名。
 
-The machine-readable command registry is available with:
+## 登录与本地凭据
+
+先用真实浏览器完成登录：
 
 ```bash
-jimeng commands list
+jimeng auth login --profile default
 ```
 
-Experimental pure JS signer workbench:
-
-```bash
-jimeng signer compare --profile default
-jimeng signer fixture --profile default --name default
-jimeng signer trace --profile default --ids 110 --code-limit 420 --ref-limit 200
-```
-
-`--algorithm-sign` is intentionally experimental. It currently verifies the pure JS canonicalization and `msToken` derivation, then falls back to the VM-backed `--node-sign` because the `a_bogus`/`fn150` translation is not complete. Golden fixtures are written under `~/.jimeng-cli/fixtures/` and should not be committed.
-`signer trace` instruments the local official VM to identify which bytecode blocks read request fields and append signing query parameters; it is read-only and does not submit a generation request.
-
-## Structure
-
-- `bin/jimeng.mjs`: CLI parsing, auth capture, and command routing.
-- `lib/client.mjs`: shared Jimeng HTTP client, default query params, cookie construction, JSON response handling.
-- `lib/config.mjs`: user-level CLI config for output paths, retry count, and retry delay.
-- `lib/signer.mjs`: browser signer, headless local signer, pure Node `bdms` VM signer, signed request replay.
-- `lib/image.mjs`: image model map, ratio/resolution table, image generation, reference URI handling, ImageX upload.
-- `lib/video.mjs`: video model map, Seedance request builder, and video generation flow.
-- `lib/audio.mjs`: TTS voice map, audio request builder, and audio generation flow.
-- `lib/media.mjs`: history/status/queue, media extraction, downloads, jobs list/sync/status, run workflow.
-
-## Auth
-
-Recommended external-browser flow:
-
-```bash
-jimeng auth login --profile default --port 9222
-```
-
-Log in to Jimeng in the Chrome window that opens, then capture the first-party session cookie:
-
-```bash
-jimeng auth capture --profile default --port 9222
-```
-
-Check the stored auth summary:
+检查登录态和环境：
 
 ```bash
 jimeng auth status --profile default
-```
-
-Check local configuration and environment:
-
-```bash
-jimeng config list
-jimeng config set output_dir outputs
-jimeng config set retry_count 1
 jimeng doctor --profile default
+jimeng commands list
 ```
 
-Save a `sessionid` from the Jimeng browser cookie:
+默认数据目录：
+
+- 登录态：`~/.jimeng-cli/profiles/<profile>/auth.json`
+- 浏览器用户目录：`~/.jimeng-cli/browser-profiles/<profile>/`
+- 签名脚本缓存：`~/.jimeng-cli/sdk/`
+- 下载输出：当前工作目录的 `outputs/`，除非命令显式指定路径
+
+`~/.jimeng-cli` 包含你的 Cookie、token 和会话信息。不要提交到 Git，不要贴给别人，也不要让 Agent 在回答里打印完整内容。
+
+## 签名方式
+
+即梦接口依赖 `msToken` 和 `a_bogus` 等浏览器侧签名。当前 CLI 的默认目标是本地复现浏览器签名逻辑：
+
+- `--algorithm-sign`：纯 JS 复刻 `bdms/fn150` 签名算法，当前已经可用于真实请求。
+- `--local-sign` / node-sign：在 Node 中加载官方浏览器运行时脚本，让它产出签名 URL。
+- `--browser-sign`：通过浏览器环境兜底签名。
+
+建议优先使用 `--algorithm-sign` 做测试；如果即梦更新了风控脚本，再用 node-sign 或 browser-sign 对比差异。
+
+签名健康检查：
 
 ```bash
-node bin/jimeng.mjs auth save --profile default --sessionid "YOUR_SESSIONID"
+jimeng signer compare --profile default
 ```
 
-The CLI redacts saved credentials in output.
+## 图片生成
 
-## Product Commands
+文字生成图片：
 
-New commands default to pure Node VM signing (`--node-sign`), so generation does not require an open browser after auth capture.
-`--algorithm-sign` can be used as an experimental signer path; until the pure JS `a_bogus` algorithm is complete, it reports `algorithm_fallback: "node-sign"` in the request summary.
+```bash
+jimeng image create \
+  --profile default \
+  --prompt "一只小猫在窗边睡觉，电影感，柔和光线" \
+  --model image-3.0 \
+  --ratio 1:1 \
+  --algorithm-sign
+```
 
-Create a video job:
+等待并下载结果：
+
+```bash
+jimeng image wait --profile default --history-id <history-id>
+jimeng image download --profile default --history-id <history-id> --index 0 --output-dir outputs
+```
+
+参考图生成图片：
+
+```bash
+jimeng image create \
+  --profile default \
+  --prompt "保留主体姿态，改成赛博朋克夜景" \
+  --reference-image ./input.png \
+  --model image-3.0 \
+  --ratio 16:9 \
+  --algorithm-sign
+```
+
+## 视频生成
+
+创建视频任务：
 
 ```bash
 jimeng video create \
@@ -158,19 +131,29 @@ jimeng video create \
   --prompt "一只小猫在窗边睡觉，电影感，柔和光线" \
   --model seedance-2.0-vip \
   --duration 5 \
-  --ratio 16:9
+  --ratio 16:9 \
+  --algorithm-sign
 ```
 
-Check, wait, and download:
+查询状态：
 
 ```bash
-jimeng video status --profile default --history-id "<history_id>"
-jimeng video queue --profile default --history-id "<history_id>"
-jimeng video wait --profile default --history-id "<history_id>" --interval-ms 30000
-jimeng video download --profile default --history-id "<history_id>" --index 0
+jimeng video status --profile default --history-id <history-id>
 ```
 
-Create, wait, and download in one command:
+等待完成：
+
+```bash
+jimeng video wait --profile default --history-id <history-id> --interval-ms 5000 --timeout-ms 600000
+```
+
+下载视频：
+
+```bash
+jimeng video download --profile default --history-id <history-id> --index 0 --output-dir outputs
+```
+
+一条命令完成创建、等待、下载：
 
 ```bash
 jimeng video run \
@@ -179,197 +162,93 @@ jimeng video run \
   --model seedance-2.0-vip \
   --duration 5 \
   --ratio 16:9 \
+  --algorithm-sign \
   --output outputs/cat.mp4
 ```
 
-Image and audio use the same shape:
+已经真实验证过的参数组合：
 
-```bash
-jimeng image create --profile default --prompt "一张电影感的未来城市夜景" --ratio 16:9 --resolution 2k
-jimeng audio create --profile default --text "接口回归测试。"
+```text
+model: seedance-2.0-vip
+duration: 5
+ratio: 16:9
+signer: pure JS --algorithm-sign
+result: 1280x720 MP4, about 5 seconds
 ```
 
-List recent submitted jobs:
+## 配音、Agent 与历史记录
+
+查看可用命令：
 
 ```bash
-jimeng models list
-jimeng history list --limit 20
-jimeng history list --limit 20 --type audio
-jimeng jobs list --limit 20
-jimeng jobs sync --limit 20 --pages 2
-jimeng jobs add --history-id "<history_id>" --type video
-jimeng jobs status --limit 20
+jimeng commands list
 ```
 
-## Compatibility Commands
-
-Read-only account check:
+常用入口：
 
 ```bash
-node bin/jimeng.mjs session --profile default
+jimeng audio create --profile default --text "你好，欢迎使用即梦 CLI"
+jimeng audio wait --profile default --history-id <history-id>
+jimeng audio download --profile default --history-id <history-id> --index 0 --output-dir outputs
+jimeng history list --profile default --limit 20
+jimeng download --url "<media-url>" --output outputs/media.bin
 ```
 
-Read-only credit check:
+如果页面新增了模型、尺寸、时长或参考图参数，优先通过浏览器捕获真实请求，再把字段落到 CLI 参数里。
+
+## 重新捕获接口
+
+当页面改版、模型列表变化、任务失败，或需要研究新创作类型时，先启动复用登录态的真实浏览器：
 
 ```bash
-node bin/jimeng.mjs credits --profile default
+jimeng auth login --profile default --port 9222
 ```
 
-Start image generation. This is state-changing and can consume Jimeng credits:
+然后在源码仓库里运行开发用抓包脚本，完成一次真实页面操作后保存 redacted 摘要：
 
 ```bash
-node bin/jimeng.mjs generate-image \
-  --profile default \
-  --prompt "一张电影感的未来城市夜景" \
-  --model jimeng-4.5 \
-  --ratio 16:9 \
-  --resolution 2k
+node scripts/capture-browser-flow.mjs \
+  --port 9222 \
+  --mode manual \
+  --output captures/browser-flow-redacted.json
 ```
 
-Poll a returned history id:
+摘要会写入：
+
+```text
+captures/browser-flow-redacted.json
+```
+
+后续实现时应把新捕获的接口与 `lib/client.mjs`、`lib/image.mjs`、`lib/video.mjs`、`lib/audio.mjs`、`lib/signer.mjs` 和 `lib/bdms-algorithm.mjs` 对比，而不是只参考旧开源项目。
+
+## 打包与验证
+
+这个项目按 npm CLI 交付，不默认构建单文件 binary。
+
+语法检查：
 
 ```bash
-node bin/jimeng.mjs check-image --profile default --history-id "<history_id>"
+npm run check
 ```
 
-Wait until completion:
+查看将发布到 npm 包里的文件：
 
 ```bash
-node bin/jimeng.mjs wait-image \
-  --profile default \
-  --history-id "<history_id>" \
-  --interval-ms 10000 \
-  --timeout-ms 1800000
+npm run pack:dry
 ```
 
-Download one generated image from a history record without printing its signed URL:
+本地 tarball 验证：
 
 ```bash
-node bin/jimeng.mjs download-image \
-  --profile default \
-  --history-id "<history_id>" \
-  --index 0 \
-  --output outputs/image-0.png
+tmpdir="$(mktemp -d)"
+npm pack --pack-destination "$tmpdir"
+npm install --prefix "$tmpdir/global" -g "$tmpdir"/jimeng-cli-0.1.0.tgz
+"$tmpdir/global/bin/jimeng" --help
 ```
 
-Send a prompt to Agent mode:
+## 安全边界
 
-```bash
-node bin/jimeng.mjs agent-chat \
-  --profile default \
-  --prompt "给我一个一句话图片创意"
-```
-
-Start text-to-audio generation with the verified preset voice `直爽女大`:
-
-```bash
-node bin/jimeng.mjs generate-audio \
-  --profile default \
-  --text "欢迎来到即梦接口测试。" \
-  --voice zhishuang-nvda
-```
-
-Check or wait for image/video/audio history records:
-
-```bash
-node bin/jimeng.mjs check-media --profile default --history-id "<history_id>"
-node bin/jimeng.mjs wait-media --profile default --history-id "<history_id>"
-```
-
-Download a generated media result without printing its signed URL:
-
-```bash
-node bin/jimeng.mjs download-media \
-  --profile default \
-  --history-id "<history_id>" \
-  --index 0 \
-  --output outputs/media-0.mp3
-```
-
-Video generation payload is implemented from browser capture. Use `--node-sign` for the current pure Node signer:
-
-```bash
-node bin/jimeng.mjs generate-video \
-  --profile default \
-  --prompt "蓝色玻璃立方体在白色背景中缓慢旋转" \
-  --model seedance-2.0-fast \
-  --ratio 16:9 \
-  --duration 5 \
-  --node-sign
-```
-
-`--node-sign` runs Jimeng's current `bdms-1.0.1.20.js` in a pure Node `vm` browser shim and appends current `msToken` / `a_bogus` query parameters before replaying from Node. Run `capture-auth` from a logged-in Chrome session first; it saves the `xmst` value required for `msToken`.
-
-`--local-sign` remains available as a fallback. It runs the same official `bdms` script in a headless local Chromium page instead of the Node VM shim.
-
-`--browser-sign --port 9222` remains available as a fallback. It uses the live Jimeng page to generate current `msToken` / `a_bogus` query parameters, intercepts that signed request locally, then replays it from Node.
-
-Download a returned image URL:
-
-```bash
-node bin/jimeng.mjs download --url "https://..." --output outputs/image.webp
-```
-
-## Confirmed Limits
-
-Verified locally:
-
-- CLI syntax with `node --check`.
-- Help/usage output.
-- Auth save path and redacted output with a fake session value.
-- External Chrome login/capture commands were added for CDP-based auth capture without the in-app browser.
-- External Chrome CDP capture succeeded after login and saved a redacted `sessionid` profile plus `xmst_len=184` for local `msToken` signing.
-- `session` read-only check returned HTTP 200.
-- `credits` read-only check returned HTTP 200.
-- Real CLI `generate-image` succeeded with `history_id=34567179802892`.
-- `check-image` confirmed `status=50`, `fail_msg=Success`, and 4 generated PNG items at 2048x2048.
-- `download-image` was added to download generated images by `history_id` and item index without exposing signed URLs.
-- `download-image --history-id 34567179802892 --index 0` saved `outputs/jimeng-cli-download-0.png`; `file` confirmed it is a 2048x2048 PNG.
-- Browser-operated `视频生成` succeeded in submitting a `Seedance 2.0 Fast` job with `history_id=34554355869452`, but the queue was very long.
-- Direct CLI `generate-video` without browser signing returns Jimeng `ret=4013` risk-control rejection.
-- `generate-video --browser-sign --port 9222` now reaches Jimeng business validation with current browser-generated `msToken` and 192-character `a_bogus`; the latest real test returned `ret=1310` / `exceed_model_parallel_max` because the account already had too many queued video tasks.
-- `generate-video --local-sign` now reaches the same Jimeng business validation using locally executed `bdms-1.0.1.20.js`; the latest real test returned `ret=1310` with `msToken_len=184` and `a_bogus_len=192`.
-- `generate-video --node-sign` now submits successfully using pure Node VM signing; the latest real test returned `history_id=34581829134860`, `msToken_len=184`, and `a_bogus_len=176`.
-- `video status --history-id 34581829134860` confirmed `status=50`, `model=Seedance 2.0 VIP`, and one 1280x720 MP4 result.
-- `video queue --history-id 34581829134860` confirmed the queue endpoint and returned `queue_status=3`, `queue_length=0`.
-- `video download --history-id 34581829134860 --index 0` saved `outputs/video-node-sign-34581829134860.mp4`; `file` confirmed it is an MP4.
-- `jobs add` and `jobs status` were verified against `history_id=34581829134860`.
-- `history list --limit 3` was verified against `/mweb/v1/get_history`; it returned recent Seedance 2.0 VIP jobs and `next_offset`.
-- `history list --type audio` was verified and returned completed MP3 records.
-- `jobs sync --limit 3` imported website history into the local job store and is idempotent on repeated runs. `--pages N` follows `next_offset` for multi-page sync.
-- Browser-operated `配音生成` with voice `直爽女大` succeeded.
-- CLI `generate-audio --text "接口回归测试。"` succeeded with `history_id=34564885937676`.
-- `wait-media --history-id 34564885937676` confirmed two MP3 results.
-- `download-media --history-id 34558310019596 --index 0` saved `outputs/interface-audio-0.mp3`.
-- CLI `agent-chat` reached `/mweb/v1/creation_agent/v2/conversation` and returned the site SSE stream.
-
-Verified in the logged-in in-app browser after explicit approval for a real test:
-
-- Prompt: `测试用：一只小橙色机器人坐在蓝色书桌旁，干净白色背景，3D 渲染风格`
-- UI mode: `图片生成`
-- Model shown by the site: `图片5.0 Lite`
-- Ratio/resolution shown by the site: `智能比例 / 2K`
-- Result: page reached `1/1 生成完成` and displayed two generated robot-at-desk images.
-- Screenshot evidence: `outputs/jimeng-real-test-browser.png`
-
-Known gaps:
-
-- Local `--reference-image` upload creates ImageX objects, but Jimeng audit returns `ret=3020 download file failed`.
-- Unsigned direct video replay returns `ret=4013`; use `--node-sign`, `--local-sign`, or `--browser-sign`.
-- Digital-human and action-copy generation require media/template selection. Their config endpoints are captured but generation commands are not implemented yet.
-- `jobs sync --pages N` imports multiple website history pages by following `next_offset`.
-- Normal status output intentionally redacts signed URLs; use `download-image` or `download-media` for file export.
-
-## Sources
-
-- Live page: `https://jimeng.jianying.com/ai-tool/generate?type=image&workspace=0`
-- Public reference implementation: `https://github.com/iptag/jimeng-api`
-- Public DeepWiki notes on `jimeng-free-api` image flow.
-
-## Parameter Research
-
-See `PARAMS.md` for the browser-captured parameter matrix covering image models, ratios, resolutions, reference-image requests, and the current local-upload limitation.
-
-See `INTERFACE_TESTS.md` for the full creation-type interface report covering Agent, image, video, digital human, audio, and action-copy captures.
-
-See `SIGNATURE.md` for the `msToken` / `a_bogus` validation and open-source signer comparison.
+- 只在你拥有授权的账号和工作区中使用。
+- 不要提交 `auth.json`、`captures/`、`outputs/`、签名 URL、Cookie、token 或完整请求头。
+- 生成、删除、下载和发布类命令会消耗远端资源或改变远端状态，自动化前应确认意图。
+- 如果接口返回风控或授权错误，先检查登录态和签名对比，不要盲目重试。

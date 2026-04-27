@@ -1,0 +1,7 @@
+interface:
+  display_name: "jimeng-cli"
+  short_description: "用 CLI 操作即梦/剪映图片、视频、配音与历史任务"
+  default_prompt: "Use $jimeng-cli to log in, inspect captured Jimeng/Jianying APIs, generate images or videos, poll jobs, download media, and compare local bdms signing."
+
+policy:
+  allow_implicit_invocation: true
