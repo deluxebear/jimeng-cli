@@ -9,13 +9,13 @@
 直接用 `npx` 运行：
 
 ```bash
-npx jimeng-cli --help
+npx @deluxebear/jimeng-cli --help
 ```
 
 全局安装后使用 `jimeng` 命令：
 
 ```bash
-npm install -g jimeng-cli
+npm install -g @deluxebear/jimeng-cli
 jimeng --help
 ```
 
@@ -31,22 +31,22 @@ jimeng --help
 
 ```bash
 npm pack
-npm install -g ./jimeng-cli-0.1.0.tgz
+npm install -g ./deluxebear-jimeng-cli-0.1.0.tgz
 ```
 
 安装配套的 Agent Skill：
 
 ```bash
-npx skills add <owner>/<repo> --skill jimeng-cli
+npx skills add deluxebear/jimeng-cli --skill jimeng-cli
 ```
 
 全局安装到 Agent：
 
 ```bash
-npx skills add <owner>/<repo> --skill jimeng-cli -g -y
+npx skills add deluxebear/jimeng-cli --skill jimeng-cli -g -y
 ```
 
-把 `<owner>/<repo>` 替换为实际发布这个仓库的 GitHub 仓库名。
+GitHub 仓库名为 `deluxebear/jimeng-cli`。
 
 ## 登录与本地凭据
 
@@ -242,7 +242,7 @@ npm run pack:dry
 ```bash
 tmpdir="$(mktemp -d)"
 npm pack --pack-destination "$tmpdir"
-npm install --prefix "$tmpdir/global" -g "$tmpdir"/jimeng-cli-0.1.0.tgz
+npm install --prefix "$tmpdir/global" -g "$tmpdir"/deluxebear-jimeng-cli-0.1.0.tgz
 "$tmpdir/global/bin/jimeng" --help
 ```
 

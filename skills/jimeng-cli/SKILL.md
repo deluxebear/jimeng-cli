@@ -8,16 +8,16 @@ description: Use this skill when operating or installing the jimeng-cli Jimeng/J
 Use this skill to run the `jimeng-cli` npm CLI for authenticated Jimeng/Jianying web workflows. The skill can be installed from GitHub with:
 
 ```bash
-npx skills add <owner>/<repo> --skill jimeng-cli
+npx skills add deluxebear/jimeng-cli --skill jimeng-cli
 ```
 
 For global agent-level installation:
 
 ```bash
-npx skills add <owner>/<repo> --skill jimeng-cli -g -y
+npx skills add deluxebear/jimeng-cli --skill jimeng-cli -g -y
 ```
 
-Replace `<owner>/<repo>` with the GitHub repository that publishes this project.
+The GitHub repository is `deluxebear/jimeng-cli`.
 
 ## Command Runner
 
@@ -30,7 +30,7 @@ jimeng <command> --profile default
 If `jimeng` is not installed, run the published npm package without installing it globally:
 
 ```bash
-npx -y jimeng-cli <command> --profile default
+npx -y @deluxebear/jimeng-cli <command> --profile default
 ```
 
 Inside this repository during development, this is also valid:

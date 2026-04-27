@@ -1,8 +1,15 @@
 {
-  "name": "jimeng-cli",
+  "name": "@deluxebear/jimeng-cli",
   "version": "0.1.0",
   "description": "Authenticated Jimeng/Jianying web workflow CLI for image, video, audio, agent, and history operations.",
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/deluxebear/jimeng-cli.git"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "bin": {
     "jimeng": "./bin/jimeng.mjs"
   },
